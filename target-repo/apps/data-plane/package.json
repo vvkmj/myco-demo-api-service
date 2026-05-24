@@ -1,0 +1,52 @@
+{
+  "name": "data-plane",
+  "version": "1.0.0",
+  "description": "High-performance message routing system",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/dataPlane.ts sticky-app static-app",
+    "start:data-plane": "node ./dist/dataPlane.js",
+    "start:dlq": "node ./dist/dlq.js",
+    "test": "jest",
+    "test:integration": "jest -c jest.integration.config.ts",
+    "test:setup-data": "ts-node __integrationtest__/setup/create-test-data.ts",
+    "test:setup-consumer-groups": "ts-node __integrationtest__/setup/create-consumer-groups.ts",
+    "test:verify-eventhub": "ts-node __integrationtest__/scripts/verify-eventhub-messages.ts",
+    "test:collect-eh-data": "ts-node __integrationtest__/scripts/eh-data-collector.ts",
+    "test:ingest-data": "ts-node __integrationtest__/scripts/ingest-test-data.ts",
+    "test:setup-pulsar-data": "ts-node __integrationtest__/setup/create-test-data.ts --pulsar",
+    "test:verify-pulsar": "ts-node __integrationtest__/scripts/verify-pulsar-messages.ts",
+    "test:ingest-pulsar-data": "ts-node __integrationtest__/scripts/ingest-pulsar-data.ts",
+    "test:collect-pulsar-data": "ts-node __integrationtest__/scripts/pulsar-data-collector.ts",
+    "test:dump-stats": "ts-node __integrationtest__/scripts/dump-test-data-stats.ts",
+    "test:pulsar-integration": "jest -c jest.integration.config.ts --testPathPattern=pulsar --runInBand --forceExit",
+    "benchmark:ingest": "ts-node __integrationtest__/scripts/benchmark/ingest-benchmark-data.ts",
+    "benchmark:collect": "ts-node __integrationtest__/scripts/benchmark/collect-benchmark-data.ts",
+    "benchmark:compute": "ts-node __integrationtest__/scripts/benchmark/compute-results.ts",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@motorq/lodash-mixins": "^1.0.1",
+    "@motorq/metric-collector": "^2.0.0",
+    "@packages/drs-types": "*",
+    "@packages/utilities": "*",
+    "axios": "1.12.0",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@packages/drs-types": "*",
+    "@packages/jest-config": "*",
+    "@packages/typescript-config": "*",
+    "@types/jest": "^29.5.10",
+    "@types/node": "^20.10.0",
+    "@types/uuid": "^9.0.7",
+    "jest": "^29.7.0",
+    "jest-junit": "^16.0.0",
+    "rimraf": "^6.0.1",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.3.2"
+  }
+}

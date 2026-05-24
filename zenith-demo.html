@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Zenith — AI-Powered PR Review Agent</title>
+<style>
+/* ── Reset & tokens ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --blue:        #1a56db;
+  --blue-d:      #1245b0;
+  --blue-light:  #e8f0fe;
+  --blue-mid:    #4285f4;
+  --teal:        #0d9488;
+  --teal-light:  #ccfbf1;
+  --green:       #16a34a;
+  --green-light: #dcfce7;
+  --amber:       #d97706;
+  --amber-light: #fef3c7;
+  --red:         #dc2626;
+  --purple:      #7c3aed;
+  --purple-light:#ede9fe;
+  --gray-50:     #f8fafc;
+  --gray-100:    #f1f5f9;
+  --gray-200:    #e2e8f0;
+  --gray-300:    #cbd5e1;
+  --gray-400:    #94a3b8;
+  --gray-500:    #64748b;
+  --gray-600:    #475569;
+  --gray-700:    #334155;
+  --gray-800:    #1e293b;
+  --gray-900:    #0f172a;
+  --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'Cascadia Code', 'Fira Mono', 'Consolas', monospace;
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--font);
+  background: var(--gray-100);
+  color: var(--gray-800);
+  overflow: hidden;
+}
+
+/* ── Deck & slides ──────────────────────────────────────────── */
+.deck { width: 100vw; height: 100vh; position: relative; overflow: hidden; }
+
+.slide {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 2.5rem 4.5rem;
+  opacity: 0;
+  transform: translateX(60px);
+  transition: opacity .38s ease, transform .38s ease;
+  pointer-events: none;
+  background: white;
+}
+.slide.active  { opacity: 1; transform: translateX(0); pointer-events: auto; }
+.slide.exit    { opacity: 0; transform: translateX(-60px); }
+
+/* ── Navigation ─────────────────────────────────────────────── */
+.nav {
+  position: fixed; bottom: 1.75rem; left: 50%; transform: translateX(-50%);
+  display: flex; gap: .75rem; align-items: center; z-index: 100;
+  background: rgba(255,255,255,.94); border: 1px solid var(--gray-200);
+  border-radius: 2rem; padding: .45rem 1.25rem;
+  box-shadow: 0 4px 24px rgba(0,0,0,.08);
+}
+.nav button {
+  background: none; border: none; cursor: pointer; font-size: 1.1rem;
+  color: var(--blue); padding: .2rem .5rem; border-radius: .4rem; transition: background .15s;
+}
+.nav button:hover { background: var(--blue-light); }
+.nav button:disabled { color: var(--gray-300); cursor: default; background: none; }
+#counter { font-size: .78rem; color: var(--gray-500); min-width: 52px; text-align: center; font-weight: 600; }
+.dots { display: flex; gap: .35rem; align-items: center; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gray-200); cursor: pointer; transition: background .2s, transform .2s; }
+.dot.on { background: var(--blue); transform: scale(1.4); }
+
+.hint { position: fixed; top: 1.25rem; right: 1.75rem; font-size: .7rem; color: var(--gray-400); z-index: 100; }
+
+/* ── Shared layout helpers ──────────────────────────────────── */
+.slide-content { width: 100%; max-width: 1020px; margin: 0 auto; }
+.section-tag {
+  font-size: .68rem; font-weight: 700; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--blue); margin-bottom: .4rem;
+}
+.slide h2 { font-size: 2.2rem; font-weight: 800; color: var(--gray-900); letter-spacing: -.025em; line-height: 1.2; }
+.sub { font-size: .95rem; color: var(--gray-500); line-height: 1.5; margin-top: .25rem; }
+.rule { width: 44px; height: 4px; background: var(--blue); border-radius: 2px; margin: .7rem 0 1.6rem; }
+.rule.short { margin-bottom: 1.25rem; }
+.text-c { text-align: center; width: 100%; }
+.rule-c { margin-left: auto; margin-right: auto; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .28rem .75rem; border-radius: 2rem; font-size: .75rem; font-weight: 700; width: fit-content;
+}
+.b-blue   { background: var(--blue-light);   color: var(--blue); }
+.b-green  { background: var(--green-light);  color: var(--green); }
+.b-teal   { background: var(--teal-light);   color: var(--teal); }
+.b-amber  { background: var(--amber-light);  color: var(--amber); }
+.b-purple { background: var(--purple-light); color: var(--purple); }
+.b-gray   { background: var(--gray-100);     color: var(--gray-600); }
+
+.tag-wrap { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .75rem; }
+.sn { position: absolute; top: 1.5rem; left: 2rem; font-size: .68rem; font-weight: 700; color: var(--gray-300); letter-spacing: .06em; }
+
+/* ── Slide 1: Title ──────────────────────────────────────────── */
+.slide-title {
+  background: linear-gradient(150deg, var(--gray-900) 0%, #1e3a5f 55%, var(--blue) 100%);
+  color: white; text-align: center; gap: 1.25rem;
+}
+.slide-title .logo-pill {
+  display: inline-flex; align-items: center; gap: .65rem;
+  background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18);
+  border-radius: 2rem; padding: .45rem 1.1rem; font-size: .8rem;
+  letter-spacing: .09em; text-transform: uppercase; font-weight: 600; color: #93c5fd;
+}
+.slide-title h1 {
+  font-size: 3.6rem; font-weight: 900; letter-spacing: -.035em;
+  line-height: 1.05; color: white;
+}
+.slide-title h1 em { color: #60a5fa; font-style: normal; }
+.slide-title .tagline-row { display: flex; gap: 2rem; justify-content: center; flex-wrap: wrap; }
+.slide-title .titem { display: flex; align-items: center; gap: .5rem; font-size: .88rem; color: #bfdbfe; }
+.green-dot { width: 8px; height: 8px; border-radius: 50%; background: #34d399; flex-shrink: 0; }
+
+/* ── Slide 2: Problem ────────────────────────────────────────── */
+.prob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; width: 100%; max-width: 860px; }
+.prob-card { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: .85rem; padding: 1.35rem 1.25rem; }
+.prob-card .ico { font-size: 1.6rem; margin-bottom: .6rem; }
+.prob-card h3 { font-size: .92rem; font-weight: 700; color: var(--gray-900); margin-bottom: .3rem; }
+.prob-card p  { font-size: .82rem; color: var(--gray-500); line-height: 1.55; }
+
+/* ── Slide 3: Multi-agent architecture ──────────────────────── */
+.arch-flow {
+  width: 100%; max-width: 880px;
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+}
+
+.arch-trigger-bar {
+  width: 100%; display: flex; align-items: center; gap: 1rem;
+  background: var(--gray-900); border-radius: .85rem; padding: .85rem 1.35rem;
+}
+.arch-trigger-bar .atb-icon { font-size: 1.3rem; flex-shrink: 0; }
+.arch-trigger-bar h4 { font-size: .95rem; font-weight: 800; color: #e2e8f0; margin: 0; }
+.arch-trigger-bar p  { font-size: .76rem; color: var(--gray-400); margin: .1rem 0 0; }
+.arch-trigger-bar .atb-tag {
+  margin-left: auto; font-size: .71rem; color: var(--gray-500); white-space: nowrap;
+  background: rgba(255,255,255,.07); border-radius: .45rem; padding: .3rem .7rem; font-weight: 600;
+}
+
+.arch-down {
+  display: flex; flex-direction: column; align-items: center;
+  color: var(--gray-400); font-size: .68rem; font-weight: 600; padding: .2rem 0; gap: 0; line-height: 1;
+}
+.arch-down .arr { font-size: 1.2rem; }
+
+.arch-agents {
+  width: 100%; display: grid;
+  grid-template-columns: 1fr 56px 1fr;
+  align-items: start;
+}
+
+.agent-box { border-radius: .85rem; padding: 1.1rem 1.1rem; border: 2px solid; }
+.agent-box.a1 { border-color: var(--blue); background: #eff6ff; }
+.agent-box.a2 { border-color: var(--teal); background: #f0fdfa; }
+.agent-box .agent-label {
+  font-size: .63rem; font-weight: 800; letter-spacing: .13em;
+  text-transform: uppercase; margin-bottom: .3rem; display: block;
+}
+.a1 .agent-label { color: var(--blue); }
+.a2 .agent-label { color: var(--teal); }
+.agent-box h4 { font-size: .88rem; font-weight: 800; color: var(--gray-900); margin-bottom: .5rem; line-height: 1.2; }
+.agent-box ul { list-style: none; display: flex; flex-direction: column; gap: .25rem; }
+.agent-box li {
+  font-size: .75rem; color: var(--gray-600);
+  display: flex; gap: .35rem; line-height: 1.35; align-items: flex-start;
+}
+.agent-box li::before { content: "▸"; flex-shrink: 0; margin-top: .05rem; }
+.a1 li::before { color: var(--blue); }
+.a2 li::before { color: var(--teal); }
+.agent-box .model-pill {
+  margin-top: .6rem; display: inline-flex; align-items: center;
+  background: rgba(0,0,0,.07); border-radius: 1rem; padding: .18rem .6rem;
+  font-size: .67rem; font-weight: 600; color: var(--gray-600); font-family: var(--mono);
+}
+
+.arch-mid-col {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .2rem; padding-top: 2.5rem;
+}
+.arch-mid-col .big-arr { font-size: 1.4rem; color: var(--gray-400); line-height: 1; }
+.arch-mid-col .lbl { font-size: .63rem; color: var(--gray-400); font-weight: 600; text-align: center; line-height: 1.3; }
+
+.arch-outputs-row {
+  width: 100%; display: grid; grid-template-columns: repeat(4, 1fr); gap: .6rem;
+}
+.out-chip {
+  background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: .65rem;
+  padding: .55rem .75rem; font-size: .75rem; color: var(--gray-700); font-weight: 500;
+  display: flex; align-items: flex-start; gap: .4rem; line-height: 1.35;
+}
+
+/* ── Slide 4: Agent 1 detail ─────────────────────────────────── */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.75rem; width: 100%; max-width: 1000px; align-items: start; }
+
+.detail-card { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: .85rem; padding: 1.35rem 1.25rem; }
+.detail-card h3 { font-size: .92rem; font-weight: 700; color: var(--gray-900); margin-bottom: .75rem; display: flex; align-items: center; gap: .5rem; }
+.detail-card ul { list-style: none; display: flex; flex-direction: column; gap: .5rem; }
+.detail-card li { font-size: .83rem; color: var(--gray-600); display: flex; align-items: flex-start; gap: .5rem; line-height: 1.45; }
+.detail-card li .dot-b { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); flex-shrink: 0; margin-top: .38rem; }
+.detail-card li .dot-t { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); flex-shrink: 0; margin-top: .38rem; }
+
+.code-block {
+  background: var(--gray-900); color: #e2e8f0; border-radius: .75rem;
+  padding: 1rem 1.2rem; font-family: var(--mono); font-size: .75rem;
+  line-height: 1.6; white-space: pre; overflow-x: auto;
+}
+.code-block .kw  { color: #93c5fd; }
+.code-block .str { color: #86efac; }
+.code-block .cmt { color: #64748b; }
+.code-block .num { color: #fbbf24; }
+
+/* ── Slide 5: Agent 2 / Validator ───────────────────────────── */
+.verdict-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1.75rem; width: 100%; max-width: 1000px; }
+
+.verdict-explainer {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  border: 2px solid #86efac; border-radius: .85rem; padding: 1.5rem;
+  display: flex; flex-direction: column; gap: .9rem;
+}
+.verdict-explainer h3 { font-size: 1rem; font-weight: 800; color: var(--green); }
+
+.v-row {
+  background: white; border-radius: .6rem; padding: .75rem 1rem;
+  display: grid; grid-template-columns: 130px 1fr; gap: .75rem; align-items: start;
+}
+.v-row .v-tag {
+  font-size: .75rem; font-weight: 800; padding: .25rem .6rem;
+  border-radius: .4rem; text-align: center; width: fit-content; font-family: var(--mono);
+}
+.v-conf  { background: #dcfce7; color: var(--green); }
+.v-unc   { background: #fef3c7; color: var(--amber); }
+.v-fp    { background: #fee2e2; color: var(--red); }
+.v-row p { font-size: .8rem; color: var(--gray-600); line-height: 1.45; }
+
+.action-list { display: flex; flex-direction: column; gap: .6rem; }
+.action-item {
+  display: flex; align-items: flex-start; gap: .75rem;
+  background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: .6rem;
+  padding: .75rem 1rem;
+}
+.action-num {
+  width: 26px; height: 26px; border-radius: 50%; background: var(--teal); color: white;
+  font-size: .75rem; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.action-item h4 { font-size: .85rem; font-weight: 700; color: var(--gray-900); margin-bottom: .2rem; }
+.action-item p  { font-size: .78rem; color: var(--gray-500); line-height: 1.4; }
+
+/* ── Slide 6: What gets posted ──────────────────────────────── */
+.post-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.25rem; width: 100%; max-width: 980px; }
+
+.post-card { border-radius: .85rem; padding: 1.35rem 1.2rem; border: 2px solid; }
+.pc-gh   { border-color: #93c5fd; background: #eff6ff; }
+.pc-jira { border-color: #a5b4fc; background: #eef2ff; }
+.pc-ci   { border-color: #86efac; background: #f0fdf4; }
+
+.post-card .pc-head {
+  font-size: .68rem; font-weight: 800; letter-spacing: .12em;
+  text-transform: uppercase; margin-bottom: .5rem;
+}
+.pc-gh   .pc-head { color: var(--blue); }
+.pc-jira .pc-head { color: var(--purple); }
+.pc-ci   .pc-head { color: var(--green); }
+
+.post-card h3 { font-size: .95rem; font-weight: 800; color: var(--gray-900); margin-bottom: .75rem; }
+.post-card ul { list-style: none; display: flex; flex-direction: column; gap: .45rem; }
+.post-card li { font-size: .8rem; color: var(--gray-600); display: flex; gap: .45rem; line-height: 1.4; align-items: flex-start; }
+.post-card li::before { content: "→"; font-weight: 700; flex-shrink: 0; }
+.pc-gh   li::before { color: var(--blue); }
+.pc-jira li::before { color: var(--purple); }
+.pc-ci   li::before { color: var(--green); }
+
+.severity-table { width: 100%; border-collapse: collapse; margin-top: .85rem; font-size: .76rem; }
+.severity-table th { background: var(--gray-100); color: var(--gray-600); font-weight: 700; padding: .4rem .6rem; text-align: left; }
+.severity-table td { padding: .4rem .6rem; border-top: 1px solid var(--gray-200); color: var(--gray-700); }
+.sev-blocker { color: var(--red);    font-weight: 700; font-family: var(--mono); font-size: .7rem; }
+.sev-p1      { color: var(--amber);  font-weight: 700; font-family: var(--mono); font-size: .7rem; }
+.sev-p2      { color: var(--blue);   font-weight: 700; font-family: var(--mono); font-size: .7rem; }
+.sev-p3      { color: var(--gray-500); font-weight: 700; font-family: var(--mono); font-size: .7rem; }
+
+/* ── Slide 7: Real results ───────────────────────────────────── */
+.results-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.2rem; width: 100%; max-width: 980px; }
+
+.res-card { border-radius: .85rem; padding: 1.3rem 1.2rem; background: var(--gray-50); border: 1px solid var(--gray-200); display: flex; flex-direction: column; gap: .6rem; }
+.res-card .proj { font-size: .68rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--gray-400); }
+.res-card h3  { font-size: .95rem; font-weight: 800; color: var(--gray-900); line-height: 1.3; }
+.res-card .big-num { font-size: 2.4rem; font-weight: 900; letter-spacing: -.035em; line-height: 1; }
+.res-card p   { font-size: .8rem; color: var(--gray-600); line-height: 1.5; }
+
+.nn-blue   { color: var(--blue); }
+.nn-teal   { color: var(--teal); }
+.nn-green  { color: var(--green); }
+.nn-amber  { color: var(--amber); }
+.nn-purple { color: var(--purple); }
+
+/* ── Slide 8: NRV deep dive ─────────────────────────────────── */
+.nrv-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1.75rem; width: 100%; max-width: 980px; }
+
+.finding-type { border-radius: .75rem; padding: 1.25rem 1.15rem; border: 1.5px solid; }
+.ft-valid    { border-color: #86efac; background: #f0fdf4; }
+.ft-obsolete { border-color: #fcd34d; background: #fffbeb; }
+.ft-intent   { border-color: #c4b5fd; background: #f5f3ff; }
+
+.finding-type .ft-label { font-size: .68rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; margin-bottom: .4rem; }
+.ft-valid    .ft-label { color: var(--green); }
+.ft-obsolete .ft-label { color: var(--amber); }
+.ft-intent   .ft-label { color: var(--purple); }
+
+.finding-type h4 { font-size: .92rem; font-weight: 800; color: var(--gray-900); margin-bottom: .4rem; }
+.finding-type p  { font-size: .8rem; color: var(--gray-600); line-height: 1.5; }
+.finding-type .ft-note { font-size: .75rem; font-style: italic; margin-top: .5rem; color: var(--gray-500); }
+
+.nrv-summary {
+  grid-column: span 2;
+  background: var(--gray-900); color: white; border-radius: .85rem;
+  padding: 1.1rem 1.5rem; display: flex; align-items: center; gap: 2rem;
+}
+.nrv-summary .ns-num { font-size: 2rem; font-weight: 900; color: #60a5fa; flex-shrink: 0; }
+.nrv-summary p { font-size: .85rem; color: #cbd5e1; line-height: 1.5; }
+.nrv-summary strong { color: white; }
+
+/* ── Slide 9: Model & Cost ──────────────────────────────────── */
+.model-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1.75rem; width: 100%; max-width: 980px; }
+
+.model-card { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: .85rem; padding: 1.4rem 1.25rem; display: flex; flex-direction: column; gap: .85rem; }
+.model-card h3 { font-size: .95rem; font-weight: 800; color: var(--gray-900); }
+.model-row { display: flex; align-items: flex-start; gap: .75rem; padding: .65rem .75rem; background: white; border: 1px solid var(--gray-200); border-radius: .55rem; }
+.model-row .mkey { font-size: .72rem; font-weight: 700; color: var(--gray-500); font-family: var(--mono); min-width: 140px; flex-shrink: 0; }
+.model-row .mval { font-size: .8rem; color: var(--gray-800); font-family: var(--mono); line-height: 1.4; }
+.model-row .mval em { font-style: normal; color: var(--blue); font-weight: 600; }
+
+.cost-card {
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  border: 2px solid #fcd34d; border-radius: .85rem; padding: 1.4rem 1.25rem;
+  display: flex; flex-direction: column; gap: .75rem;
+}
+.cost-card h3 { font-size: .95rem; font-weight: 800; color: var(--amber); }
+.cost-row { display: flex; justify-content: space-between; align-items: center; background: white; border-radius: .5rem; padding: .55rem .85rem; }
+.cost-row .cr-left { font-size: .8rem; color: var(--gray-700); }
+.cost-row .cr-right { font-size: .95rem; font-weight: 800; color: var(--amber); font-family: var(--mono); }
+
+/* ── Slide 10: Closing ──────────────────────────────────────── */
+.slide-close {
+  background: linear-gradient(150deg, var(--gray-900) 0%, #1e3a5f 55%, var(--blue) 100%);
+  color: white; text-align: center; gap: 1.5rem;
+}
+.slide-close h2 { font-size: 2.5rem; font-weight: 900; color: white; letter-spacing: -.03em; }
+.close-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; max-width: 780px; }
+.close-card { background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.15); border-radius: 1rem; padding: 1.25rem; text-align: center; }
+.close-card .big { font-size: 2.2rem; font-weight: 900; color: #60a5fa; }
+.close-card .lbl { font-size: .78rem; color: #bfdbfe; margin-top: .3rem; line-height: 1.35; font-weight: 500; }
+.close-note { color: #93c5fd; font-size: .9rem; max-width: 560px; line-height: 1.6; }
+.close-note strong { color: white; }
+</style>
+</head>
+<body>
+
+<div class="hint">← → arrow keys</div>
+
+<div class="deck" id="deck">
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 1 — Title
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-title active" id="s0">
+  <div class="logo-pill"><span>⚡</span> Motorq Engineering — Internal Demo</div>
+  <h1>Meet <em>Zenith</em></h1>
+  <p style="color:#93c5fd; font-size:1.15rem; max-width:560px; line-height:1.55;">
+    An AI-powered SDET agent that reviews every PR end-to-end.
+  </p>
+  <div class="tagline-row">
+    <div class="titem"><span class="green-dot"></span> Multi-agent architecture</div>
+    <div class="titem"><span class="green-dot"></span> claude-sonnet-4-6 via LiteLLM</div>
+    <div class="titem"><span class="green-dot"></span> 75+ real bugs found to date</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 2 — The Problem
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s1">
+  <span class="sn">02 / 10</span>
+  <div class="slide-content text-c">
+    <div class="section-tag">The Problem</div>
+    <h2>What manual review misses at scale</h2>
+    <div class="rule rule-c"></div>
+    <div class="prob-grid">
+      <div class="prob-card">
+        <div class="ico">📦</div>
+        <h3>Bugs might slip through large PRs</h3>
+        <p>A 100+ file, 20 000-line PR is humanly impossible to trace fully — reviewers skim, callers are missed, and bugs slip through under deadline pressure.</p>
+      </div>
+      <div class="prob-card">
+        <div class="ico">🗺️</div>
+        <h3>Import graph context is invisible to reviewers</h3>
+        <p>A changed function may be called in x places. Manually tracing dependencies takes hours and is rarely done — Zenith walks the import graph automatically.</p>
+      </div>
+      <div class="prob-card">
+        <div class="ico">✅</div>
+        <h3>No structured validation before action</h3>
+        <p>A single-pass review raises findings without verifying them against the actual codebase. Zenith uses a dedicated second agent to confirm or dismiss before adding any comment or ticket is created.</p>
+      </div>
+      <div class="prob-card">
+        <div class="ico">🎫</div>
+        <h3>Bug-to-Jira traceability is manual overhead</h3>
+        <p>Filing detailed ADF-formatted Jira tickets from review comments is tedious and skipped. Zenith creates them automatically — with the Jira link attached directly to the inline PR comment.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 3 — Multi-agent architecture (main technical slide)
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s2">
+  <span class="sn">03 / 10</span>
+  <div class="slide-content text-c">
+    <div class="section-tag">Architecture</div>
+    <h2>Two specialized agents, not one generalist</h2>
+    <div class="rule rule-c short"></div>
+
+    <div class="arch-flow">
+
+      <!-- Row 1: Trigger -->
+      <div class="arch-trigger-bar">
+        <span class="atb-icon">🔗</span>
+        <div>
+          <h4>GitHub PR Opened / Pushed</h4>
+          <p>fleet-streams <code style="font-family:var(--mono);font-size:.73rem;">workflow_call</code> → motorq/zenith reusable workflow</p>
+        </div>
+        <span class="atb-tag">every push to master</span>
+      </div>
+
+      <!-- Down arrow -->
+      <div class="arch-down">
+        <span class="arr">↓</span>
+        <span>diff + repo clone</span>
+      </div>
+
+      <!-- Row 2: Two agents -->
+      <div class="arch-agents">
+
+        <div class="agent-box a1">
+          <span class="agent-label">Agent 1 — Reviewer</span>
+          <h4>Build context. Brainstorm freely.</h4>
+          <ul>
+            <li>Fetches full PR diff (paginated GitHub API)</li>
+            <li>Sparse-clones repo at the PR's head branch</li>
+            <li>Walks import graph — up to 8 hops, 220k-char budget</li>
+            <li><code style="font-family:var(--mono);font-size:.71rem;">read_file</code> tool: pulls any file on demand</li>
+            <li>Raises every bug it sees — no self-censorship</li>
+            <li>Output: BLOCKER / P1 / P2 / P3 structured cards</li>
+          </ul>
+          <div class="model-pill">claude-sonnet-4-6</div>
+        </div>
+
+        <div class="arch-mid-col">
+          <span class="big-arr">→</span>
+          <span class="lbl">findings<br/>cards</span>
+        </div>
+
+        <div class="agent-box a2">
+          <span class="agent-label">Agent 2 — Validator</span>
+          <h4>Verify each finding against the codebase.</h4>
+          <ul>
+            <li>Receives all Agent 1 cards as structured input</li>
+            <li>Has full diff + import-graph context in window</li>
+            <li><code style="font-family:var(--mono);font-size:.71rem;">read_file</code> tool: reads the exact file cited</li>
+            <li>Verdict per bug: CONFIRMED / FALSE_POSITIVE / UNCERTAIN</li>
+            <li>Assigns Confidence (HIGH/MEDIUM/LOW) + Merge-blocking</li>
+            <li>Only CONFIRMED findings trigger any downstream action</li>
+          </ul>
+          <div class="model-pill">FW-GLM-5.1 (or VALIDATOR_MODEL)</div>
+        </div>
+
+      </div>
+
+      <!-- Down arrow -->
+      <div class="arch-down">
+        <span class="arr">↓</span>
+        <span>CONFIRMED findings only</span>
+      </div>
+
+      <!-- Row 3: Outputs -->
+      <div class="arch-outputs-row">
+        <div class="out-chip">💬 Inline comment on exact diff line</div>
+        <div class="out-chip">🎫 Jira ticket (ADF) + link in comment</div>
+        <div class="out-chip">🚦 CI gate: exit 1 on P1/BLOCKER</div>
+        <div class="out-chip">📄 findings.json artifact per PR</div>
+      </div>
+
+    </div>
+
+    <div class="tag-wrap" style="justify-content:center; margin-top:.85rem;">
+      <span class="badge b-blue">Agent 1 casts wide — no false negative filter</span>
+      <span class="badge b-teal">Agent 2 verifies — no false positives reach the PR</span>
+      <span class="badge b-gray">Both agents together improves the quality of bugs.</span>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 4 — Agent 1: How it builds context
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s3">
+  <span class="sn">04 / 10</span>
+  <div class="slide-content">
+    <div class="section-tag">Agent 1 — Reviewer</div>
+    <h2>Context-first, then brainstorm — no self-censorship</h2>
+    <div class="rule"></div>
+    <div class="two-col">
+      <div style="display:flex; flex-direction:column; gap:1rem;">
+        <div class="detail-card">
+          <h3>🗺️ Dynamic context building</h3>
+          <ul>
+            <li><span class="dot-b"></span>Walks the import graph from every changed file — up to 8 hops deep</li>
+            <li><span class="dot-b"></span>Stays within a 220k-char budget to fit the full context window</li>
+            <li><span class="dot-b"></span>Each diff line is prefixed with its absolute file line number — so findings cite exact lines, not estimates from <code style="font-family:var(--mono)">@@</code> headers</li>
+            <li><span class="dot-b"></span>On-demand <code style="font-family:var(--mono)">read_file</code> tool — Agent 1 can pull any file it needs mid-review without restarting</li>
+          </ul>
+        </div>
+        <div class="detail-card">
+          <h3>🧠 Unconstrained brainstorming</h3>
+          <ul>
+            <li><span class="dot-b"></span>Agent 1 is instructed to raise every bug it sees — no validation gate means it doesn't self-censor edge cases</li>
+            <li><span class="dot-b"></span>Output: 4 structured sections — Executive Summary, Findings, Test Gaps, Regression Risk</li>
+            <li><span class="dot-b"></span>Every finding has a Root Cause, Impact, and concrete Fix — structured cards Agent 2 can parse and verify</li>
+          </ul>
+        </div>
+      </div>
+      <div class="code-block"><span class="cmt">// Diff lines Agent 1 sees (absolute line numbers)</span>
++<span class="num">44</span>: const cfg = getConfig(vehicleId);
+ <span class="num">45</span>: const timeout = cfg.timeout;  <span class="cmt">// ← Agent 1 flags this</span>
++<span class="num">46</span>: await enroll(vehicleId, timeout);
+
+<span class="cmt">// Structured finding card Agent 1 produces:</span>
+<span class="kw">---</span>
+<span class="str">**[BLOCKER-1]**</span> Null dereference when vehicle
+             has no active subscription
+<span class="kw">**File:**</span> src/enrollers/ford/enroller.ts · line 45
+<span class="kw">**Root cause:**</span> getConfig() returns undefined for
+  unsubscribed vehicles but line 45 dereferences
+  .timeout unconditionally.
+<span class="kw">**Impact:**</span> TypeError on every Ford enroll request
+  for unsubscribed vehicles → 500s in production.
+<span class="kw">**Fix:**</span> if (!cfg) return Result.err("no_subscription")
+<span class="kw">---</span>
+
+<span class="cmt">// This card is then passed to Agent 2 for validation</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 5 — Agent 2: Validator
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s4">
+  <span class="sn">05 / 10</span>
+  <div class="slide-content">
+    <div class="section-tag">Agent 2 — Validator</div>
+    <h2>Every finding verified against the live codebase</h2>
+    <div class="rule"></div>
+    <div class="verdict-layout">
+      <div class="verdict-explainer">
+        <h3>How Agent 2 verdicts each finding</h3>
+        <div class="v-row">
+          <span class="v-tag v-conf">CONFIRMED</span>
+          <p>Bug is real and present in the code as described. Agent cites the specific line that proves it. Triggers inline comment + Jira ticket + CI gate check.</p>
+        </div>
+        <div class="v-row">
+          <span class="v-tag v-unc">UNCERTAIN</span>
+          <p>Cannot confirm or deny without runtime information (e.g. depends on a race condition or external state). Flagged for human review — no ticket created.</p>
+        </div>
+        <div class="v-row">
+          <span class="v-tag v-fp">FALSE_POSITIVE</span>
+          <p>Code already handles the case, or Agent 1's claim was incorrect. Dropped silently — developer never sees it.</p>
+        </div>
+        <div style="margin-top:.25rem;">
+          <p style="font-size:.78rem; color: var(--gray-600);">Each verdict also carries <strong>Confidence</strong> (HIGH / MEDIUM / LOW) and <strong>Merge-blocking</strong> (yes / no) — used by the CI gate to decide whether to block the PR.</p>
+        </div>
+      </div>
+      <div class="action-list">
+        <div class="action-item">
+          <div class="action-num">1</div>
+          <div>
+            <h4>Read the cited file</h4>
+            <p>Agent 2 calls <code style="font-family:var(--mono); font-size:.75rem;">read_file</code> on the exact path from each finding card. It does not speculate — it reads the source.</p>
+          </div>
+        </div>
+        <div class="action-item">
+          <div class="action-num">2</div>
+          <div>
+            <h4>Cross-check against the diff</h4>
+            <p>The original diff and import graph context are both in Agent 2's context window. It reasons across all findings in a single batch call — catching consistency issues.</p>
+          </div>
+        </div>
+        <div class="action-item">
+          <div class="action-num">3</div>
+          <div>
+            <h4>Assign severity + merge-blocking</h4>
+            <p>Independently scores severity based on impact (not just Agent 1's label). Decides whether the bug, if real, would block a safe merge.</p>
+          </div>
+        </div>
+        <div class="action-item">
+          <div class="action-num">4</div>
+          <div>
+            <h4>Dedup check before acting</h4>
+            <p>Before posting, checks existing PR threads and a per-finding SHA-256 hash to skip findings already raised in a previous run on the same PR.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 6 — What gets posted where
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s5">
+  <span class="sn">06 / 10</span>
+  <div class="slide-content text-c">
+    <div class="section-tag">Output & Integrations</div>
+    <h2>Confirmed findings flow into GitHub, Jira, and CI automatically</h2>
+    <div class="rule rule-c short"></div>
+    <div class="post-grid">
+
+      <div class="post-card pc-gh">
+        <div class="pc-head">GitHub PR</div>
+        <h3>Inline review comments</h3>
+        <ul>
+          <li>BLOCKER / P1 / P2 posted as inline review comments on the exact diff line</li>
+          <li>P3 findings go in the PR review body (non-blocking, suggestions)</li>
+          <li>Non merge-blocking bugs added as review suggestions, not blocking reviews</li>
+          <li>Executive summary with Risk Level and Approve/Block recommendation</li>
+          <li>Jira ticket URL attached directly to each inline comment</li>
+        </ul>
+        <table class="severity-table">
+          <tr><th>Severity</th><th>Inline?</th><th>Blocks PR?</th></tr>
+          <tr><td><span class="sev-blocker">BLOCKER</span></td><td>✓ inline</td><td>✓ if CONFIRMED</td></tr>
+          <tr><td><span class="sev-p1">P1</span></td><td>✓ inline</td><td>✓ if CONFIRMED</td></tr>
+          <tr><td><span class="sev-p2">P2</span></td><td>✓ inline</td><td>✗</td></tr>
+          <tr><td><span class="sev-p3">P3</span></td><td>✓ inline</td><td>✗</td></tr>
+        </table>
+      </div>
+
+      <div class="post-card pc-jira">
+        <div class="pc-head">Jira</div>
+        <h3>Auto-filed bug tickets</h3>
+        <ul>
+          <li>Tickets created only for CONFIRMED merge-blocking bugs</li>
+          <li>ADF rich-text format — Root Cause, Impact, Fix steps, PR link, author</li>
+          <li>Hash-based deduplication — same bug on 3 pushes = 1 ticket, not 3</li>
+          <li>Labelled with "pr-reviewer" + 8-char finding hash for Jira search</li>
+          <li>Ticket URL linked back in the inline PR comment</li>
+        </ul>
+      </div>
+
+      <div class="post-card pc-ci">
+        <div class="pc-head">CI Gate</div>
+        <h3>Merge blocking</h3>
+        <ul>
+          <li>Process exits 1 only if there are CONFIRMED merge-blocking bugs at or above GATE_MIN_SEVERITY</li>
+          <li>Default: P1 and BLOCKER block. P2/P3 never block even if confirmed.</li>
+          <li>Phase 1 mode (CI_GATE=false) — Zenith runs, comments, and tickets but never blocks a merge</li>
+          <li>Phase 2: flip one line to start blocking</li>
+          <li>findings.json written per run — full audit trail</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 7 — Zenith in Action (screenshots)
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s6">
+  <span class="sn">07 / 11</span>
+  <div class="slide-content text-c">
+    <div class="section-tag">Zenith in Action</div>
+    <h2>What a developer sees on their PR</h2>
+    <div class="rule rule-c short"></div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; width:100%; max-width:980px; margin:0 auto;">
+
+      <div style="display:flex; flex-direction:column; gap:.4rem;">
+        <div style="background:var(--gray-900); border-radius:.6rem; overflow:hidden; border:1px solid var(--gray-700);">
+          <img src="demo-assets/screenshot-1-summary.png" alt="Confirmed Bugs summary table posted as a PR comment" style="width:100%; display:block; border-radius:.5rem;" />
+        </div>
+        <p style="font-size:.75rem; color:var(--gray-500); text-align:center; line-height:1.4;"><strong style="color:var(--gray-700);">Summary table</strong> — github-actions bot posts a structured "Confirmed Bugs" table listing every finding with severity, location, verdict, and Jira ticket link</p>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:.4rem;">
+        <div style="background:var(--gray-900); border-radius:.6rem; overflow:hidden; border:1px solid var(--gray-700);">
+          <img src="demo-assets/screenshot-2-inline.png" alt="Inline comment on diff line" style="width:100%; display:block; border-radius:.5rem;" />
+        </div>
+        <p style="font-size:.75rem; color:var(--gray-500); text-align:center; line-height:1.4;"><strong style="color:var(--gray-700);">Inline comment on the exact diff line</strong> — finding ID, title, file:line, verdict, confidence, and merge-blocking status placed right where the bug is</p>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:.4rem;">
+        <div style="background:var(--gray-900); border-radius:.6rem; overflow:hidden; border:1px solid var(--gray-700);">
+          <img src="demo-assets/screenshot-3-jira-link.png" alt="Inline comment with Jira ticket link" style="width:100%; display:block; border-radius:.5rem;" />
+        </div>
+        <p style="font-size:.75rem; color:var(--gray-500); text-align:center; line-height:1.4;"><strong style="color:var(--gray-700);">Jira ticket linked in the comment</strong> — every BLOCKER/P1 inline comment includes a direct "Jira ticket" link; no manual filing needed</p>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:.4rem;">
+        <div style="background:var(--gray-900); border-radius:.6rem; overflow:hidden; border:1px solid var(--gray-700);">
+          <img src="demo-assets/screenshot-4-jira-tickets.png" alt="Jira Tickets Filed PR comment with all ticket URLs" style="width:100%; display:block; border-radius:.5rem;" />
+        </div>
+        <p style="font-size:.75rem; color:var(--gray-500); text-align:center; line-height:1.4;"><strong style="color:var(--gray-700);">"Jira Tickets Filed" PR comment</strong> — a single follow-up comment lists every ticket created in that run with direct Jira URLs, making triage instant</p>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 8 — Real-world results
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s7">
+  <span class="sn">08 / 11</span>
+  <div class="slide-content text-c">
+    <div class="section-tag">Results</div>
+    <h2>Across fleet-streams</h2>
+    <div class="rule rule-c short"></div>
+    <div class="results-grid">
+
+      <div class="res-card">
+        <div class="proj">ARES Migration PR</div>
+        <h3>Post-deployment validation framework migrated to fleet-streams master</h3>
+        <div class="big-num nn-blue">109 files · 8 bugs</div>
+        <p><strong>20,000+ LOC</strong> change. This was the ARES migration PR itself — the largest PR Zenith has reviewed. Raised <strong>8 valid bugs</strong> including regressions and missing error handling that would have caused silent post-deploy failures. All confirmed, all fixed. Cost: <strong>$1–$1.50</strong> total.</p>
+        <span class="badge b-blue">fleet-streams</span>
+      </div>
+
+      <div class="res-card">
+        <div class="proj">NRV Feature (Non-Reporting Vehicles)</div>
+        <h3>High-stakes feature with a hard customer deadline</h3>
+        <div class="big-num nn-teal">15+</div>
+        <p>Valid merge-blocking bugs raised. Some findings were also marked obsolete by the validator, and a few flagged intentional error-swallowing patterns (covered on the next slide). All real bugs fixed. PR merged on time.</p>
+        <span class="badge b-teal">fleet-streams</span>
+      </div>
+
+      <div class="res-card" style="grid-column: span 1;">
+        <div class="proj">HAL9K (within fleet-streams)</div>
+        <h3>Feature files with deep cross-repo dependencies</h3>
+        <div class="big-num nn-purple">✓</div>
+        <p>HAL9K feature files landed in fleet-streams. The changes had dependencies scattered across the codebase. Zenith walked the import graph, identified a <strong>dependency gap</strong> — a usage path that wasn't updated to match the new HAL9K contract — and flagged minor but real bugs the reviewer had missed.</p>
+        <span class="badge b-purple">fleet-streams (hal9k files)</span>
+      </div>
+
+      <div class="res-card" style="grid-column: span 2; background: var(--gray-900); border-color: var(--gray-700);">
+        <div class="proj" style="color: var(--gray-500);">Cumulative</div>
+        <h3 style="color: white;">Total across all codebases and PRs</h3>
+        <div class="big-num" style="color: #60a5fa;">75+</div>
+        <p style="color: #cbd5e1;">Real, grounded, validated bugs — every one confirmed by Agent 2 before any action was taken. Not theoretical or speculative; each finding is grounded in a specific file and line number.</p>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 8 — Model & Cost
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s8">
+  <span class="sn">09 / 11</span>
+  <div class="slide-content">
+    <div class="section-tag">Model Configuration & Cost</div>
+    <h2>Configurable models, routed through LiteLLM proxy</h2>
+    <div class="rule"></div>
+    <div class="model-layout">
+
+      <div class="model-card">
+        <h3>Model configuration</h3>
+        <div class="model-row">
+          <span class="mkey">LITELLM_MODEL</span>
+          <span class="mval"><em>claude-sonnet-4-6</em> (default)<br/>Agent 1 — reviewer pass</span>
+        </div>
+        <div class="model-row">
+          <span class="mkey">VALIDATOR_MODEL</span>
+          <span class="mval"><em>FW-GLM-5.1</em> (default, same)<br/>Agent 2 — can use a different model independently</span>
+        </div>
+        <div class="model-row">
+          <span class="mkey">LITELLM_BASE_URL</span>
+          <span class="mval">LiteLLM proxy — all model routing<br/>goes through it (swap models with one env var)</span>
+        </div>
+        <div class="model-row">
+          <span class="mkey">max_tokens</span>
+          <span class="mval"><em>32,768</em> · temperature: <em>0</em><br/>Deterministic output — same diff = same review</span>
+        </div>
+        <div class="model-row">
+          <span class="mkey">timeout</span>
+          <span class="mval"><em>600s</em> per request · streaming enabled<br/>Large PRs don't time out — chunks write to file as they arrive</span>
+        </div>
+        <div class="model-row">
+          <span class="mkey">retry logic</span>
+          <span class="mval">3 attempts on ETIMEDOUT, ECONNRESET,<br/>429, 5xx — exponential backoff</span>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:1rem;">
+        <div class="cost-card">
+          <h3>Cost per PR</h3>
+          <div class="cost-row">
+            <span class="cr-left">ARES migration: 109 files, 20,000+ LOC — both agents</span>
+            <span class="cr-right">$1 – $1.50</span>
+          </div>
+          <div class="cost-row">
+            <span class="cr-left">Typical fleet-streams PR (10–30 files)</span>
+            <span class="cr-right">~$0.10 – $0.30</span>
+          </div>
+          <div class="cost-row">
+            <span class="cr-left">Cost driver</span>
+            <span class="cr-right">input tokens (diff + context)</span>
+          </div>
+          <p style="font-size:.78rem; color: var(--amber); margin-top:.3rem; line-height:1.4;">Includes Agent 1 review pass, Agent 2 validation batch, and all <code style="font-family:var(--mono)">read_file</code> tool calls made by both agents.</p>
+        </div>
+
+        <div class="detail-card">
+          <h3>🔒 Security model</h3>
+          <ul>
+            <li><span class="dot-t"></span>All secrets (LITELLM_API_KEY, GITHUB_TOKEN, JIRA_TOKEN) flow via GitHub Actions secrets — never in code</li>
+            <li><span class="dot-t"></span>ZENITH_PAT used for cross-repo workflow_call — scoped read-only to the Zenith repo</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 10 — Extensibility & Local Setup
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide" id="s9">
+  <span class="sn">10 / 11</span>
+  <div class="slide-content">
+    <div class="section-tag">Extensibility & Setup</div>
+    <h2>Today: fleet-streams master. Tomorrow: any repo, any branch.</h2>
+    <div class="rule"></div>
+    <div class="two-col">
+
+      <div style="display:flex; flex-direction:column; gap:1rem;">
+        <div class="detail-card">
+          <h3>📍 Current scope</h3>
+          <ul>
+            <li><span class="dot-b"></span>Zenith is currently wired to <strong>fleet-streams master branch only</strong> every PR targeting master triggers a review automatically via GitHub Actions</li>
+            <li><span class="dot-b"></span>This was intentional for Phase 1: observe, measure signal quality, tune before expanding</li>
+          </ul>
+        </div>
+        <div class="detail-card">
+          <h3>🌐 Extending to any repo</h3>
+          <ul>
+            <li><span class="dot-b"></span>Adding Zenith to any other repo is <strong>one YAML file</strong> copy the config, add the 4 secrets, done</li>
+            <li><span class="dot-b"></span>Zenith auto-derives the repo URL and branch from the PR <strong>zero per-repo configuration</strong></li>
+            <li><span class="dot-b"></span>Works on any GitHub-hosted TypeScript, Java, Go, or mixed codebase — the import graph walker adapts to whatever files changed</li>
+          </ul>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:1rem;">
+        <div class="detail-card" style="background: var(--gray-900); border-color: var(--gray-700);">
+          <h3 style="color:#93c5fd;">💻 Run it locally — right now</h3>
+          <ul style="gap:.4rem;">
+            <li style="color:#cbd5e1;"><span style="color:#60a5fa;">▸</span> Anyone can trigger a review on any PR from their machine</li>
+          </ul>
+          <div class="code-block" style="margin-top:.75rem; font-size:.72rem;">
+<span class="cmt"># 1. Clone Zenith</span>
+git clone https://github.com/motorq/zenith
+cd zenith
+
+<span class="cmt"># 2. Add a .env file with your credentials</span>
+PR_LINK=https://github.com/motorq/fleet-streams/pull/123
+LITELLM_API_KEY=<span class="str">your-key</span>
+LITELLM_BASE_URL=<span class="str">your-proxy-url</span>
+GITHUB_TOKEN=<span class="str">your-github-pat</span>
+JIRA_BASE_URL=https://motorq.atlassian.net
+JIRA_TOKEN=<span class="str">email:api-token</span>
+JIRA_PROJECT=FS
+
+<span class="cmt"># 3. Install & run</span>
+npm install
+npm start
+
+<span class="cmt"># That's it. Review streams to ./reviews/</span></div>
+        </div>
+        <div class="detail-card">
+          <h3>⚙️ What's configurable</h3>
+          <ul>
+            <li><span class="dot-t"></span>Minimum severity to report (MIN_SEVERITY=P2 to skip P3 noise)</li>
+            <li><span class="dot-t"></span>Whether to post GitHub comments or just generate the review locally</li>
+            <li><span class="dot-t"></span>Whether to create Jira tickets (CREATE_TICKETS=false for local dry-runs)</li>
+            <li><span class="dot-t"></span>Separate model for the validator pass (VALIDATOR_MODEL env var)</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Slide 11 — Closing
+══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-close" id="s10">
+  <span class="sn" style="color:rgba(255,255,255,.25);">11 / 11</span>
+  <div class="logo-pill" style="color:#93c5fd;"><span>⚡</span> Zenith — AI SDET Agent</div>
+  <h2>Two agents. Every PR.<br/>Real bugs, confirmed before you see them.</h2>
+  <div class="close-grid">
+    <div class="close-card">
+      <div class="big">75+</div>
+      <div class="lbl">Real bugs found<br/>across all codebases</div>
+    </div>
+    <div class="close-card">
+      <div class="big">2</div>
+      <div class="lbl">Specialized agents —<br/>reviewer + validator</div>
+    </div>
+    <div class="close-card">
+      <div class="big">~$1</div>
+      <div class="lbl">Full review of a<br/>20K-line PR</div>
+    </div>
+  </div>
+  <p class="close-note">
+    Live on <strong>fleet-streams</strong>. Phase 1: observe + notify.
+    One config line to flip to <strong>Phase 2: gate on P1/BLOCKER.</strong>
+  </p>
+  <div style="margin-top:.5rem; display:flex; flex-direction:column; align-items:center; gap:.5rem;">
+    <p style="font-size:1.6rem; font-weight:900; color:white; letter-spacing:-.02em;">Thank you!</p>
+    <p style="font-size:1rem; color:#93c5fd; font-weight:500;">Happy to answer all your questions 🙋</p>
+  </div>
+</div>
+
+</div><!-- /deck -->
+
+<!-- Nav bar -->
+<div class="nav" id="nav">
+  <button id="prevBtn" onclick="navigate(-1)" disabled>←</button>
+  <div class="dots" id="dots"></div>
+  <span id="counter">1 / 11</span>
+  <button id="nextBtn" onclick="navigate(1)">→</button>
+</div>
+
+<script>
+  const TOTAL = 11;
+  let cur = 0;
+
+  const dotsEl = document.getElementById('dots');
+  for (let i = 0; i < TOTAL; i++) {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i === 0 ? ' on' : '');
+    d.onclick = () => go(i);
+    dotsEl.appendChild(d);
+  }
+
+  function go(idx) {
+    const slides = document.querySelectorAll('.slide');
+    slides.forEach((s, i) => {
+      s.classList.remove('active', 'exit');
+      if (i === idx) s.classList.add('active');
+      else if (i < idx) s.classList.add('exit');
+    });
+    document.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('on', i === idx));
+    document.getElementById('counter').textContent = `${idx + 1} / ${TOTAL}`;
+    document.getElementById('prevBtn').disabled = idx === 0;
+    document.getElementById('nextBtn').disabled = idx === TOTAL - 1;
+    cur = idx;
+  }
+
+  function navigate(dir) { const n = cur + dir; if (n >= 0 && n < TOTAL) go(n); }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') navigate(1);
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   navigate(-1);
+    if (e.key === 'Home') go(0);
+    if (e.key === 'End')  go(TOTAL - 1);
+  });
+
+  let tx = 0;
+  document.addEventListener('touchstart', e => { tx = e.touches[0].clientX; });
+  document.addEventListener('touchend',   e => { const d = e.changedTouches[0].clientX - tx; if (Math.abs(d) > 50) navigate(d < 0 ? 1 : -1); });
+</script>
+</body>
+</html>

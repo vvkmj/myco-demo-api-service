@@ -1,0 +1,42 @@
+{
+  "name": "data-routing-service",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "clean": "turbo run clean",
+    "dev": "turbo run dev",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "change": "npx changeset",
+    "version": "npx changeset version",
+    "release": "npm run build && npx changeset publish",
+    "benchmark": "bash benchmark/ci-benchmark.sh",
+    "benchmark:json": "bash benchmark/ci-benchmark.sh --json",
+    "benchmark:profile-cpu": "bash benchmark/profile-cpu.sh",
+    "benchmark:profile-memory": "bash benchmark/profile-memory.sh"
+  },
+  "devDependencies": {
+    "prettier": "^3.2.5",
+    "ts-node": "^10.9.2",
+    "turbo": "2.5.0"
+  },
+  "engines": {
+    "node": ">=14.0.0",
+    "npm": ">=7.0.0"
+  },
+  "packageManager": "npm@10.9.2",
+  "dependencies": {
+    "@azure/event-hubs": "^5.12.2",
+    "@azure/identity": "^4.11.1",
+    "@azure/keyvault-secrets": "^4.10.0",
+    "@motorq/logger": "2.0.0",
+    "lodash": "^4.17.21",
+    "uuid": "^11.1.0"
+  }
+}
