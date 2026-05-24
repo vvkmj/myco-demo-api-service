@@ -1,0 +1,102 @@
+name: Zenith
+
+on:
+  pull_request:
+    branches:
+      - master   # change this to match your repo's default branch (e.g. main)
+    types:
+      - opened
+      - reopened
+      - labeled
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  zenith-review:
+    name: Zenith Review
+    runs-on: ubuntu-latest
+    if: |
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'trigger-zenith'
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: motorq
+
+      - name: Export token to env
+        run: echo "GITHUB_TOKEN=${{ steps.app-token.outputs.token }}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
+        with:
+          repository: motorq/zenith
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Configure git credentials
+        run: git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Run Zenith review
+        env:
+          PR_LINK:              ${{ github.event.pull_request.html_url }}
+          LITELLM_API_KEY:      ${{ secrets.LITELLM_API_KEY }}
+          LITELLM_BASE_URL:     ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_MODEL:        ${{ vars.LITELLM_MODEL || 'quality/claude-sonnet-4-6' }}
+          VALIDATOR_MODEL:      ${{ vars.VALIDATOR_MODEL || 'azure/FW-GLM-5.1' }}
+
+          MIN_SEVERITY:         ${{ vars.ZENITH_MIN_SEVERITY || 'P2' }}
+          GATE_MIN_SEVERITY:    ${{ vars.ZENITH_GATE_MIN_SEVERITY || 'P1' }}
+          VALIDATE_FINDINGS:    ${{ vars.ZENITH_VALIDATE_FINDINGS || 'true' }}
+          CI_GATE:              ${{ vars.ZENITH_CI_GATE || 'true' }}
+          POST_GITHUB_COMMENTS: ${{ vars.ZENITH_POST_COMMENTS || 'true' }}
+          CREATE_TICKETS:       ${{ vars.ZENITH_CREATE_TICKETS || 'true' }}
+          TICKET_PROVIDER:      ${{ vars.ZENITH_TICKET_PROVIDER || 'jira' }}
+
+          JIRA_BASE_URL:        ${{ secrets.JIRA_BASE_URL }}
+          JIRA_TOKEN:           ${{ secrets.JIRA_TOKEN }}
+          JIRA_EMAIL:           ${{ secrets.JIRA_EMAIL }}
+          JIRA_PROJECT:         ${{ secrets.JIRA_PROJECT }}
+
+          TARGET_REPO_PATH:     './target-repo'
+
+        run: npm run review
+
+      - name: Upload final review report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zenith-report-pr-${{ github.event.pull_request.number }}
+          path: reviews/**/*_review.md
+          retention-days: 30
+
+      - name: Upload review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zenith-review-${{ github.run_id }}
+          path: reviews/
+          retention-days: 30
+
+      - name: Remove trigger-zenith label
+        if: always() && github.event.action == 'labeled' && github.event.label.name == 'trigger-zenith'
+        run: gh pr edit ${{ github.event.pull_request.number }} --remove-label trigger-zenith --repo ${{ github.repository }}
