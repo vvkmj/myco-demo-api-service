@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write   # required only when TICKET_PROVIDER: github-issues is used
 
 jobs:
   zenith-review:
@@ -83,12 +84,19 @@ jobs:
           CI_GATE:              ${{ vars.ZENITH_CI_GATE || 'true' }}
           POST_GITHUB_COMMENTS: ${{ vars.ZENITH_POST_COMMENTS || 'true' }}
           CREATE_TICKETS:       ${{ vars.ZENITH_CREATE_TICKETS || 'true' }}
-          TICKET_PROVIDER:      ${{ vars.ZENITH_TICKET_PROVIDER || 'jira' }}
+          CREATE_TICKETS_FOR:   ${{ vars.ZENITH_CREATE_TICKETS_FOR || 'merge-blocking' }}  # 'merge-blocking' | 'all-confirmed'
+          TICKET_PROVIDER:      ${{ vars.ZENITH_TICKET_PROVIDER || 'jira' }}  # 'jira' | 'github-issues' | 'dry-run'
 
+          # Jira (only used when TICKET_PROVIDER: jira)
           JIRA_BASE_URL:        ${{ secrets.JIRA_BASE_URL }}
           JIRA_TOKEN:           ${{ secrets.JIRA_TOKEN }}
           JIRA_EMAIL:           ${{ secrets.JIRA_EMAIL }}
           JIRA_PROJECT:         ${{ secrets.JIRA_PROJECT }}
+
+          # GitHub Issues (only used when TICKET_PROVIDER: github-issues) —
+          # no extra secret needed, reuses GITHUB_TOKEN above. GITHUB_REPOSITORY
+          # is set automatically by GitHub Actions.
+          GITHUB_ISSUE_LABELS:  ${{ vars.ZENITH_GITHUB_ISSUE_LABELS || '' }}
 
           TARGET_REPO_PATH:     './target-repo'
 

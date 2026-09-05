@@ -219,13 +219,106 @@ export class JiraTicketCreator implements TicketCreator {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GitHub Issues implementation
+//
+// Uses the same GITHUB_TOKEN the workflow already has (via `permissions:`
+// in the consumer's own workflow — requires `issues: write` in addition to
+// the existing `contents: read` / `pull-requests: write`). No extra secret
+// needed, which makes this the lowest-setup ticket provider for a
+// self-serve client. Creates the issue in the same repo being reviewed
+// (there's no token available for cross-repo writes without a separate
+// GitHub App/PAT), primarily so confirmed-bug counts are queryable via the
+// GitHub API for metrics (e.g. `is:issue label:zenith-confirmed-bug`)
+// even when a client only wants inline PR comments as their visible UX.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class GitHubIssuesTicketCreator implements TicketCreator {
+  private token: string;
+  private owner: string;
+  private repo: string;
+  private labels: string[];
+  private apiBase: string;
+
+  constructor() {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) throw new Error("Missing env var: GITHUB_TOKEN");
+
+    // GITHUB_REPOSITORY ("owner/repo") is set automatically by GitHub Actions.
+    // TICKET_GITHUB_REPO is an explicit override for non-Actions usage.
+    const repoSlug = process.env.TICKET_GITHUB_REPO || process.env.GITHUB_REPOSITORY;
+    if (!repoSlug || !repoSlug.includes("/")) {
+      throw new Error(
+        'Missing/invalid repo for GitHub Issues ticket creation — set TICKET_GITHUB_REPO ' +
+        '("owner/repo") or run under GitHub Actions where GITHUB_REPOSITORY is set automatically.'
+      );
+    }
+    const [owner, repo] = repoSlug.split("/");
+    this.token = token;
+    this.owner = owner;
+    this.repo = repo;
+    this.apiBase = (process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
+
+    const extraLabels = (process.env.GITHUB_ISSUE_LABELS || "")
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    // Per-finding severity label is added in create() since it isn't known here.
+    this.labels = [...new Set(["zenith-confirmed-bug", ...extraLabels])];
+  }
+
+  async create(finding: ValidatedFinding, prUrl: string, prAuthor?: string): Promise<string | null> {
+    const title = `[${finding.id}] ${finding.title}`;
+    const body = [
+      `**Severity:** ${finding.severity}`,
+      `**File:** ${finding.file}`,
+      "",
+      "### Root cause",
+      finding.rootCause,
+      "",
+      "### Impact",
+      finding.impact,
+      "",
+      "### Suggested fix",
+      finding.fix,
+      "",
+      "### Validator reasoning",
+      finding.validatorReasoning,
+      "",
+      `**PR:** ${prUrl}`,
+      prAuthor ? `**PR author:** @${prAuthor}` : "",
+      "",
+      "_Filed automatically — used for tracking confirmed-bug counts, not necessarily assignment._",
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+
+    const labels = [...new Set([...this.labels, finding.severity.toLowerCase()])];
+
+    const res = await axios.post(
+      `${this.apiBase}/repos/${this.owner}/${this.repo}/issues`,
+      { title, body, labels },
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      }
+    );
+
+    return res.data.html_url as string;
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Dry-run implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class DryRunTicketCreator implements TicketCreator {
   async create(finding: ValidatedFinding, prUrl: string, prAuthor?: string): Promise<string | null> {
     console.log(
-      `  [dry-run] Would create Jira ticket:\n` +
+      `  [dry-run] Would create ticket:\n` +
       `    Summary:  [${finding.id}] ${finding.title}\n` +
       `    File:     ${finding.file}\n` +
       `    PR:       ${prUrl}\n` +
@@ -240,7 +333,8 @@ export class DryRunTicketCreator implements TicketCreator {
 // Factory
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function createTicketCreator(mode: "jira" | "dry-run"): TicketCreator {
+export function createTicketCreator(mode: "jira" | "github-issues" | "dry-run"): TicketCreator {
   if (mode === "jira") return new JiraTicketCreator();
+  if (mode === "github-issues") return new GitHubIssuesTicketCreator();
   return new DryRunTicketCreator();
 }

@@ -200,13 +200,24 @@ async function main() {
   console.log(`\n📋  Parsed ${rawFindings.length} finding(s) from review.`);
 
   // Auto-detect Jira: if all three credentials are present, enable ticket creation
-  // without requiring CREATE_TICKETS=true to be set explicitly.
-  const jiraConfigured = !!(
+  // without requiring CREATE_TICKETS=true to be set explicitly. GitHub Issues
+  // needs no separate credentials (reuses GITHUB_TOKEN), so explicitly setting
+  // TICKET_PROVIDER=github-issues is itself enough to auto-enable it.
+  const jiraConfigured   = !!(
     process.env.JIRA_BASE_URL && process.env.JIRA_TOKEN && process.env.JIRA_PROJECT
   );
-  const createTickets  = process.env.CREATE_TICKETS === "true" || jiraConfigured;
-  const ticketProvider = (process.env.TICKET_PROVIDER ||
-    (jiraConfigured ? "jira" : "dry-run")) as "jira" | "dry-run";
+  const ticketProviderEnv = process.env.TICKET_PROVIDER;
+  const createTickets  = process.env.CREATE_TICKETS === "true"
+    || jiraConfigured
+    || ticketProviderEnv === "github-issues";
+  const ticketProvider = (ticketProviderEnv ||
+    (jiraConfigured ? "jira" : "dry-run")) as "jira" | "github-issues" | "dry-run";
+  // Which confirmed findings get a ticket: the historical default only files
+  // for merge-blocking bugs (Jira's implicit "needs action now" framing).
+  // "all-confirmed" is for cases like GitHub Issues used purely for metrics
+  // (counting every confirmed bug, not just the ones that block a merge).
+  const ticketScope    = (process.env.CREATE_TICKETS_FOR || "merge-blocking") as
+    "merge-blocking" | "all-confirmed";
   const ciGate         = process.env.CI_GATE !== "false"; // default true when validation runs
 
   const SEVERITY_RANK: Record<string, number> = { BLOCKER: 0, P1: 1, P2: 2, P3: 3 };
@@ -265,12 +276,13 @@ async function main() {
 
       // ── 10. Create tickets for confirmed findings ───────────────────────
       if (createTickets && validatedFindings.length > 0) {
-        console.log(`\n🎫  Creating tickets (provider: ${ticketProvider}, merge-blocking confirmed only)...`);
+        console.log(`\n🎫  Creating tickets (provider: ${ticketProvider}, scope: ${ticketScope})...`);
         const ticketCreator = createTicketCreator(ticketProvider);
         const hashes = loadTicketHashes(outputDir);
 
         for (const finding of validatedFindings) {
-          if (finding.verdict !== "CONFIRMED" || !finding.mergeBlocking) continue;
+          if (finding.verdict !== "CONFIRMED") continue;
+          if (ticketScope === "merge-blocking" && !finding.mergeBlocking) continue;
 
           // Skip if this finding was already raised in the PR (ticket detected in
           // existing PR comments from a previous run).

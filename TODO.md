@@ -12,6 +12,51 @@ scripts exercising the actual shipped functions (11/11 checks passing,
 including a side-by-side repro of the path-traversal bug against the
 pre-fix code to confirm it was really exploitable, not just theoretical).
 
+## Pilot #2 — UniformBasket (external, self-serve, private repo)
+
+Second pilot client, free, self-serve setup on their own private repo —
+different shape from Velo's pilot (white-glove, Action-only, same org).
+Decisions made for this one: distribution should NOT require checking out
+this product's private source (see Phase 1 action.yml item — now blocking,
+not just "nice to have"); UniformBasket brings their own LLM key but not
+necessarily an OpenAI-compatible one (any provider) — the current
+`LiteLLMClient` only speaks the OpenAI-compatible chat-completions shape,
+so a native-Anthropic/Gemini/etc. key needs a provider abstraction, not yet
+built; client-visible UX is GitHub inline PR comments only, but GitHub
+Issues are filed in parallel (using the client's own GITHUB_TOKEN, no extra
+secret) purely so confirmed-bug counts are queryable for metrics later.
+
+- [x] `GitHubIssuesTicketCreator` added (`src/tickets/ticketCreator.ts`) —
+      files a GitHub Issue per confirmed finding in the same repo being
+      reviewed, labeled `zenith-confirmed-bug` + severity, using the
+      already-available `GITHUB_TOKEN` (no new secret). Factory and
+      `TICKET_PROVIDER` type extended to `"github-issues"`.
+- [x] New `CREATE_TICKETS_FOR` env var (`merge-blocking` default |
+      `all-confirmed`) — decouples "which findings get a ticket" from
+      provider choice, since GitHub Issues here is for metrics (all
+      confirmed bugs) not just merge-blockers. CI gate logic (which PRs
+      actually get blocked) is unchanged — still merge-blocking-confirmed
+      only, independent of ticket scope.
+- [x] Workflow: added `issues: write` to `permissions:` (required for the
+      GitHub Issues API call) and wired the new env vars through.
+- [ ] **Blocking**: package as a real `action.yml` + bundle (see Phase 1
+      item below) so UniformBasket's CI never checks out this product's
+      private source. Decision: public bundled-action repo (compiled/bundled
+      JS only, no readable TS source) — standard pattern for distributing a
+      GitHub Action, scales to future clients without per-client access
+      grants. Requires manually creating the new repo (no `gh` CLI available
+      on this machine to automate it) and pushing the bundle.
+- [ ] **Blocking**: multi-provider LLM client. `LiteLLMClient`
+      (`src/llm/claudeClient.ts`) only supports OpenAI-compatible
+      chat-completions endpoints. UniformBasket may bring a native
+      Anthropic/Gemini/other key — needs a second `LLMClient` implementation
+      (interface already exists) selected via env, not just an
+      OpenAI-compatible proxy assumption.
+- [ ] Setup documentation: README's "Getting started" only covers local
+      `.env` + `npm start` — no reference for what a consumer's GitHub
+      Actions secrets/vars need to be. Needed as source material before
+      Grege writes the actual setup doc for UniformBasket.
+
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 
 - [x] Shell-injection risk in `src/repo/repoManager.ts` — `execSync` with
@@ -54,11 +99,12 @@ pre-fix code to confirm it was really exploitable, not just theoretical).
 - [ ] Package as a real `action.yml` (composite or Docker) so a consumer
       references `uses: <org>/<action>@v1` instead of checking out this
       product's private source into their CI.
-- [ ] Generalize ticket creation beyond Jira-only. `TicketCreator` interface
-      already exists (`src/tickets/ticketCreator.ts`) — add
-      `LinearTicketCreator` (Velo uses Linear) and a `GitHubIssuesTicketCreator`,
-      and make `TICKET_PROVIDER` + its credentials fully config/secret-driven
-      per client (Jira / Linear / GitHub Issues / dry-run).
+- [x] `GitHubIssuesTicketCreator` added (see Pilot #2 section above).
+      `TICKET_PROVIDER` is now `jira | github-issues | dry-run`, fully
+      config-driven per client.
+- [ ] `LinearTicketCreator` (Velo uses Linear) — not yet built, not currently
+      blocking either pilot (Velo's pilot hasn't started running against a
+      real repo yet; UniformBasket wants GitHub Issues, not Linear).
 - [ ] Confirm the BYO-key path (`LITELLM_BASE_URL` / `LITELLM_API_KEY` /
       `LITELLM_MODEL` pointed at a client-owned endpoint) works end-to-end —
       likely already works given `claudeClient.ts`'s design, needs testing
