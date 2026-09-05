@@ -1,0 +1,22 @@
+# Environment / secrets — never commit real credentials
+.env
+.env.local
+
+# Dependencies
+node_modules/
+
+# Sparse-checkout of whatever repo is being reviewed — regenerated per run
+# by cloneTargetRepo() in src/repo/repoManager.ts, never meant to be committed
+target-repo/
+
+# Runtime output
+reviews/
+ticket-hashes.json
+findings.json
+
+# Build output
+dist/
+*.log
+
+# Session cleanup scratch (see TODO.md)
+_to_delete/

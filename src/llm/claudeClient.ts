@@ -31,10 +31,14 @@ const FILE_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   },
 ];
 
-function executeTool(name: string, args: Record<string, string>, repoRoot: string): string {
-  const target = path.resolve(repoRoot, args.path);
-  // Prevent path traversal outside the repo
-  if (!target.startsWith(path.resolve(repoRoot))) {
+export function executeTool(name: string, args: Record<string, string>, repoRoot: string): string {
+  const root = path.resolve(repoRoot);
+  const target = path.resolve(root, args.path ?? "");
+  // Prevent path traversal outside the repo. A plain `startsWith(root)` check
+  // is exploitable: a sibling directory whose name has `root` as a string
+  // prefix (e.g. root "target-repo" vs. sibling "target-repo-secrets") would
+  // incorrectly pass. Require an exact match or a path separator boundary.
+  if (target !== root && !target.startsWith(root + path.sep)) {
     return "Error: path is outside the repository root.";
   }
 

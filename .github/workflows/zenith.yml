@@ -22,21 +22,34 @@ jobs:
       github.event.label.name == 'trigger-zenith'
 
     steps:
+      # ─────────────────────────────────────────────────────────────────
+      # NOTE (temporary, pre-action.yml packaging):
+      # This workflow currently pulls the reviewer's own source into the
+      # consuming repo's CI runner and builds/runs it from source. That's
+      # acceptable for a repo you own (dogfooding), but it means any repo
+      # that installs this workflow needs read access to the reviewer's
+      # private source (an IP-exposure problem for external pilot clients).
+      # ZENITH_APP_OWNER / ZENITH_SOURCE_REPO are set as repo/org variables
+      # so onboarding a new repo doesn't require hand-editing this file, but
+      # the real fix is packaging this as a versioned action.yml (composite
+      # or Docker) so consumers reference `uses: <org>/<action>@v1` instead
+      # of checking out source at all. Tracked in TODO.md.
+      # ─────────────────────────────────────────────────────────────────
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          owner: motorq
+          owner: ${{ vars.ZENITH_APP_OWNER }}
 
       - name: Export token to env
         run: echo "GITHUB_TOKEN=${{ steps.app-token.outputs.token }}" >> $GITHUB_ENV
 
       - uses: actions/checkout@v4
         with:
-          repository: motorq/zenith
-          ref: main
+          repository: ${{ vars.ZENITH_SOURCE_REPO }}
+          ref: ${{ vars.ZENITH_SOURCE_REF || 'main' }}
           token: ${{ steps.app-token.outputs.token }}
 
       - uses: actions/setup-node@v4
