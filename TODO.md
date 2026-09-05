@@ -100,9 +100,18 @@ code. Backend: starting fresh, low-ops.
       the metrics table using the service-role key (auto-injected into edge
       functions, never exposed to clients). Keeps `METRICS_ENDPOINT`/
       `METRICS_API_KEY` fully backend-agnostic from every client's side.
-      **Next**: write the SQL schema + edge function code, then Grege
-      deploys (Claude has no Supabase CLI session/access token — same shape
-      of blocker as the GitHub push).
+      **Done**: SQL schema (`supabase/schema.sql` — table + RLS +
+      per-client/aggregate rollup views) and the edge function
+      (`supabase/functions/ingest-metrics/` — `handler.ts` is the tested
+      pure logic, 26/26 checks against auth rejection, every payload
+      validation edge case, and DB row mapping; `index.ts` is the thin Deno
+      wrapper; `index.dashboard.ts` is a generated single-file version for
+      pasting straight into the Supabase dashboard, no CLI needed) are
+      written and in the repo. Full deploy steps in `supabase/README.md`.
+      **Still needs Grege**: run the SQL, deploy the function, set its
+      `METRICS_INGEST_KEY` secret, and hand back the deployed function URL
+      — same shape of blocker as the GitHub push (Claude has no Supabase
+      CLI session/access token for this account).
 - [ ] A small per-client + aggregate dashboard/view once the backend exists
       (even a simple query script or a lightweight page) — not yet built,
       blocked on the backend decision above.
