@@ -20,3 +20,7 @@ dist/
 
 # Session cleanup scratch (see TODO.md)
 _to_delete/
+
+# Files the Claude desktop app saves here when a chat sends a file into
+# this connected folder — not part of the project, nothing to track
+Claude outputs/

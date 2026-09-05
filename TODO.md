@@ -46,11 +46,14 @@ secret) purely so confirmed-bug counts are queryable for metrics later.
       cross-checked 1:1 against `action.yml`'s inputs; smoke-tested the real
       bundle (graceful exit on missing `PR_LINK`; full env-var wiring
       exercised through to a real outbound GitHub API call).
-      **Needs a follow-up push**: the bundle now also supports the
-      multi-provider LLM client below (`LLM_PROVIDER`, `ANTHROPIC_API_KEY`,
-      `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL` inputs) — this was added
-      *after* Grege's push, so the live repo doesn't have it yet. Rebuilt
-      package ready; needs the same push-it-yourself flow as before.
+      **Follow-up push done**: found and fixed a real bug in the process —
+      Grege's first push had `index.js` at the repo root instead of
+      `dist/index.js`, which `action.yml`'s `run:` step expects; would have
+      failed for any client at runtime. Fixed directly in his local clone
+      (device bridge write) along with adding the multi-provider LLM inputs
+      (`llm_provider`, `anthropic_api_key`, `anthropic_model`,
+      `anthropic_base_url`) and `product_label` (see Phase 0 below). Pushed
+      and confirmed `HEAD == origin/main`, no unpushed commits.
 - [x] **Unblocked**: multi-provider LLM client. Added `AnthropicClient`
       (`src/llm/anthropicClient.ts`) — native Anthropic Messages API,
       implementing the same `LLMClient` interface, reusing the exact same
@@ -68,10 +71,11 @@ secret) purely so confirmed-bug counts are queryable for metrics later.
       (proves `executeTool()` reuse — including the path-traversal guard —
       holds for this provider too), retryable-vs-fatal error handling, and
       all factory branches including the unknown-provider error.
-- [ ] Setup documentation: README's "Getting started" only covers local
-      `.env` + `npm start` — no reference for what a consumer's GitHub
-      Actions secrets/vars need to be. Needed as source material before
-      Grege writes the actual setup doc for UniformBasket.
+- [x] Setup documentation: `ONBOARDING.md` — collaborator-invite
+      reminder, exact client-side secrets table, copy-paste workflow YAML
+      (minimal + Anthropic/GitHub-Issues/Jira/metrics variants), what to
+      expect, and known limitations. Source material for Grege's
+      UniformBasket-facing doc, or usable close to as-is.
 
 ## Cross-client metrics store
 
@@ -155,9 +159,26 @@ code. Backend: starting fresh, low-ops.
       added to `.gitignore`. Whatever credentials were ever in that file's
       committed versions must be treated as compromised and rotated —
       untracking does not remove them from git history.
-- [ ] Product name still being finalized (Grege + co-founder) — blocks
-      anything public-facing (PR bot display name, App listing name,
+- [x] **Found while auditing for "integrate right away" readiness**:
+      the still-unfinalized "Zenith" codename was leaking into
+      client-visible output — a hardcoded `zenith-confirmed-bug` GitHub
+      Issues label, and `["Zenith", "pr-reviewer-agent", ...]` Jira labels.
+      A client (Velo, UniformBasket) using either ticket provider would
+      have seen the internal codename directly in their own issue tracker.
+      Fixed: both now derive from one `PRODUCT_LABEL` env var (default
+      neutral `"ai-code-review"`, no product name baked in) — wired through
+      `myco-bundled-action`'s `action.yml` as `product_label` and
+      `zenith.yml`'s `ZENITH_PRODUCT_LABEL` var. 8/8 new checks
+      (`test-jiraTicketCreator.ts`) plus the existing GitHub Issues test
+      updated. Checked every other "Zenith" occurrence in the codebase —
+      the rest are code comments and the console banner ("PR Reviewer
+      Agent" — generic, not the codename), nothing else client-visible.
+      **Still open**: product name still being finalized (Grege +
+      co-founder) — blocks only cosmetic public-facing items now (PR bot
+      display name in the console banner if that's ever changed to include
+      a real name, an App listing name if/when the GitHub App is built,
       `package.json` name, repo rename from `pr-reviewer-agent`/`zenith`).
+      None of these block integrating with a client today.
 
 ## Phase 1 — Needed for a credible pilot (not just a hacked demo)
 
@@ -180,8 +201,8 @@ code. Backend: starting fresh, low-ops.
       artifact (`retention-days: 30` in the workflow). Needs a persistent
       store so "bugs caught" evidence survives long enough to prove pilot
       value.
-- [ ] Onboarding template/scaffold (secrets/vars checklist + sample workflow)
-      so wiring up a new client repo doesn't start from a blank YAML file.
+- [x] Onboarding template/scaffold — see `ONBOARDING.md` (Pilot #2
+      section above has the full breakdown).
 
 ## Phase 2 — Not on Velo pilot's critical path (Action-only for pilot #1)
 

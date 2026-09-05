@@ -86,6 +86,7 @@ jobs:
           CREATE_TICKETS:       ${{ vars.ZENITH_CREATE_TICKETS || 'true' }}
           CREATE_TICKETS_FOR:   ${{ vars.ZENITH_CREATE_TICKETS_FOR || 'merge-blocking' }}  # 'merge-blocking' | 'all-confirmed'
           TICKET_PROVIDER:      ${{ vars.ZENITH_TICKET_PROVIDER || 'jira' }}  # 'jira' | 'github-issues' | 'dry-run'
+          PRODUCT_LABEL:        ${{ vars.ZENITH_PRODUCT_LABEL || '' }}  # ticket label base; defaults to neutral 'ai-code-review', no product-name lock-in
 
           # Jira (only used when TICKET_PROVIDER: jira)
           JIRA_BASE_URL:        ${{ secrets.JIRA_BASE_URL }}

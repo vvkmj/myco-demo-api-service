@@ -181,7 +181,13 @@ export class JiraTicketCreator implements TicketCreator {
       ],
     };
 
-    const baseLabels = ["Zenith", "pr-reviewer-agent", "auto-generated", finding.severity.toLowerCase()];
+    // No hardcoded product name here on purpose — the name isn't finalized
+    // yet, and a client-visible Jira label is exactly the kind of thing
+    // that shouldn't leak an internal codename. PRODUCT_LABEL is the one
+    // place to update once a name is picked; GitHubIssuesTicketCreator
+    // below uses the same env var so both providers stay in sync.
+    const productLabel = process.env.PRODUCT_LABEL || "ai-code-review";
+    const baseLabels = [productLabel, "auto-generated", finding.severity.toLowerCase()];
     const extraLabels = (process.env.JIRA_LABELS || "")
       .split(",")
       .map((l) => l.trim())
@@ -228,7 +234,7 @@ export class JiraTicketCreator implements TicketCreator {
 // self-serve client. Creates the issue in the same repo being reviewed
 // (there's no token available for cross-repo writes without a separate
 // GitHub App/PAT), primarily so confirmed-bug counts are queryable via the
-// GitHub API for metrics (e.g. `is:issue label:zenith-confirmed-bug`)
+// GitHub API for metrics (e.g. `is:issue label:<PRODUCT_LABEL>-confirmed-bug`)
 // even when a client only wants inline PR comments as their visible UX.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -263,7 +269,11 @@ export class GitHubIssuesTicketCreator implements TicketCreator {
       .map((l) => l.trim())
       .filter(Boolean);
     // Per-finding severity label is added in create() since it isn't known here.
-    this.labels = [...new Set(["zenith-confirmed-bug", ...extraLabels])];
+    // Same PRODUCT_LABEL env var as JiraTicketCreator — no hardcoded
+    // codename in a client-visible label while the product name is still
+    // being finalized (see comment on JiraTicketCreator's baseLabels).
+    const productLabel = process.env.PRODUCT_LABEL || "ai-code-review";
+    this.labels = [...new Set([`${productLabel}-confirmed-bug`, ...extraLabels])];
   }
 
   async create(finding: ValidatedFinding, prUrl: string, prAuthor?: string): Promise<string | null> {
