@@ -5,6 +5,13 @@ Tracking list for hardening this codebase and getting it pilot-ready with Velo
 pilot critical path). Updated as items land — see git history for when each
 box was checked.
 
+Commit `5bed01a` — "Fix shell-injection and path-traversal bugs; untrack
+secrets/fixture" — landed the three checked Phase 0 items below. Verified
+before that commit: fresh `npm ci` + `tsc --noEmit` clean, plus standalone
+scripts exercising the actual shipped functions (11/11 checks passing,
+including a side-by-side repro of the path-traversal bug against the
+pre-fix code to confirm it was really exploitable, not just theoretical).
+
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 
 - [x] Shell-injection risk in `src/repo/repoManager.ts` — `execSync` with
