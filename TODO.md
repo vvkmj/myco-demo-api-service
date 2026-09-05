@@ -39,13 +39,23 @@ secret) purely so confirmed-bug counts are queryable for metrics later.
       only, independent of ticket scope.
 - [x] Workflow: added `issues: write` to `permissions:` (required for the
       GitHub Issues API call) and wired the new env vars through.
-- [ ] **Blocking**: package as a real `action.yml` + bundle (see Phase 1
-      item below) so UniformBasket's CI never checks out this product's
-      private source. Decision: public bundled-action repo (compiled/bundled
-      JS only, no readable TS source) — standard pattern for distributing a
-      GitHub Action, scales to future clients without per-client access
-      grants. Requires manually creating the new repo (no `gh` CLI available
-      on this machine to automate it) and pushing the bundle.
+- [x] **Unblocked**: `action.yml` (composite action) + `dist/index.js`
+      (bundled via `@vercel/ncc`) built and verified — every env var the
+      code actually reads (`PR_LINK`, `LITELLM_*`, ticket/Jira/GitHub-Issues
+      vars, metrics vars, etc.) cross-checked 1:1 against `action.yml`'s
+      inputs so nothing is silently dropped; smoke-tested the real bundle
+      (graceful exit on missing `PR_LINK`; full env-var wiring exercised
+      through to a real outbound GitHub API call). Package (action.yml +
+      dist/index.js + README) is built and ready to push to the private repo
+      Grege created (`AbhishikaAgarwal/myco-bundled-action`).
+      **Still blocking**: no GitHub push credentials for that account exist
+      on this machine or in Claude's cloud workspace (checked both — neither
+      has a cached credential or `gh` CLI). Needs Grege to either (a) hand
+      over a scoped/revocable PAT for that one repo, or (b) push it himself
+      from the built package. Decision: **private** repo, clients invited as
+      collaborators (not public) — see Cross-client metrics store section,
+      this superseded the earlier "public repo" idea once the data-protection
+      concern was raised.
 - [ ] **Blocking**: multi-provider LLM client. `LiteLLMClient`
       (`src/llm/claudeClient.ts`) only supports OpenAI-compatible
       chat-completions endpoints. UniformBasket may bring a native
@@ -78,12 +88,12 @@ code. Backend: starting fresh, low-ops.
 - [ ] A small per-client + aggregate dashboard/view once the backend exists
       (even a simple query script or a lightweight page) — not yet built,
       blocked on the backend decision above.
-- [ ] **Needs a decision from Grege**: create the private bundled-action
-      distribution repo (empty, private) — Claude has no `gh` CLI or GitHub
-      API access on this machine to create it directly. Once created, Claude
-      will build the bundle (ncc/esbuild) and push it, then Grege invites
+- [x] Private bundled-action distribution repo created by Grege:
+      `https://github.com/AbhishikaAgarwal/myco-bundled-action`. Bundle is
+      built and ready (see Pilot #2 section) — **blocked on push
+      credentials**, see there. Once pushed, Grege still needs to invite
       UniformBasket's GitHub account/org as a collaborator when ready to
-      onboard them.
+      onboard them (private repo, not public).
 
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 
@@ -124,9 +134,10 @@ code. Backend: starting fresh, low-ops.
 
 ## Phase 1 — Needed for a credible pilot (not just a hacked demo)
 
-- [ ] Package as a real `action.yml` (composite or Docker) so a consumer
-      references `uses: <org>/<action>@v1` instead of checking out this
-      product's private source into their CI.
+- [x] Package as a real `action.yml` (composite) so a consumer references
+      `uses: AbhishikaAgarwal/myco-bundled-action@v1` instead of checking out
+      this product's private source into their CI. Built, verified, not yet
+      pushed — see Pilot #2 section for the credential blocker.
 - [x] `GitHubIssuesTicketCreator` added (see Pilot #2 section above).
       `TICKET_PROVIDER` is now `jira | github-issues | dry-run`, fully
       config-driven per client.
