@@ -57,6 +57,34 @@ secret) purely so confirmed-bug counts are queryable for metrics later.
       Actions secrets/vars need to be. Needed as source material before
       Grege writes the actual setup doc for UniformBasket.
 
+## Cross-client metrics store
+
+Decision: private bundled-action repo (not public) — invite each pilot
+client as a collaborator rather than making the tool publicly visible.
+Metrics payload privacy level: counts + finding summaries (title, severity,
+verdict, mergeBlocking) — no file paths, no root cause/impact/fix text, no
+code. Backend: starting fresh, low-ops.
+
+- [x] `src/output/metricsReporter.ts` — opt-in (no-op unless
+      `METRICS_ENDPOINT` set), backend-agnostic POST of the agreed-minimal
+      payload. `client_id` supports per-client + aggregate-across-clients
+      rollups downstream. 18/18 tests passing, including explicit assertions
+      that sensitive fields never appear in the serialized payload.
+- [ ] **Needs a decision from Grege**: which low-ops backend to actually
+      stand up (e.g. Supabase — free tier, managed Postgres + auto REST API,
+      no server to run) to receive these POSTs. Claude can't create
+      third-party cloud accounts — needs Grege to create the project and
+      hand back a URL + key, then Claude wires it in and verifies end-to-end.
+- [ ] A small per-client + aggregate dashboard/view once the backend exists
+      (even a simple query script or a lightweight page) — not yet built,
+      blocked on the backend decision above.
+- [ ] **Needs a decision from Grege**: create the private bundled-action
+      distribution repo (empty, private) — Claude has no `gh` CLI or GitHub
+      API access on this machine to create it directly. Once created, Claude
+      will build the bundle (ncc/esbuild) and push it, then Grege invites
+      UniformBasket's GitHub account/org as a collaborator when ready to
+      onboard them.
+
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 
 - [x] Shell-injection risk in `src/repo/repoManager.ts` — `execSync` with
