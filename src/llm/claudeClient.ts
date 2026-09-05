@@ -56,13 +56,15 @@ export function executeTool(name: string, args: Record<string, string>, repoRoot
 }
 
 // Network error codes that warrant a retry (transient failures).
-const RETRYABLE_CODES = new Set([
+// Exported so other LLMClient implementations (e.g. AnthropicClient) share
+// the exact same retry policy rather than duplicating/drifting from it.
+export const RETRYABLE_CODES = new Set([
   "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EPIPE",
 ]);
-const MAX_API_RETRIES = 3;
-const RETRY_BASE_DELAY_MS = 2000;
+export const MAX_API_RETRIES = 3;
+export const RETRY_BASE_DELAY_MS = 2000;
 
-function isRetryable(err: any): boolean {
+export function isRetryable(err: any): boolean {
   // Direct code on the error or on its underlying cause
   const code: string | undefined = err.code ?? err.cause?.code;
   if (code && RETRYABLE_CODES.has(code)) return true;

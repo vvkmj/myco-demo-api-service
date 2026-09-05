@@ -9,6 +9,7 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
     "openai": "^4.0.0",
     "axios": "^1.7.0",
     "dotenv": "^16.4.0"

@@ -39,29 +39,35 @@ secret) purely so confirmed-bug counts are queryable for metrics later.
       only, independent of ticket scope.
 - [x] Workflow: added `issues: write` to `permissions:` (required for the
       GitHub Issues API call) and wired the new env vars through.
-- [x] **Unblocked**: `action.yml` (composite action) + `dist/index.js`
-      (bundled via `@vercel/ncc`) built and verified — every env var the
-      code actually reads (`PR_LINK`, `LITELLM_*`, ticket/Jira/GitHub-Issues
-      vars, metrics vars, etc.) cross-checked 1:1 against `action.yml`'s
-      inputs so nothing is silently dropped; smoke-tested the real bundle
-      (graceful exit on missing `PR_LINK`; full env-var wiring exercised
-      through to a real outbound GitHub API call). Package (action.yml +
-      dist/index.js + README) is built and ready to push to the private repo
-      Grege created (`AbhishikaAgarwal/myco-bundled-action`).
-      **Still blocking**: no GitHub push credentials for that account exist
-      on this machine or in Claude's cloud workspace (checked both — neither
-      has a cached credential or `gh` CLI). Needs Grege to either (a) hand
-      over a scoped/revocable PAT for that one repo, or (b) push it himself
-      from the built package. Decision: **private** repo, clients invited as
-      collaborators (not public) — see Cross-client metrics store section,
-      this superseded the earlier "public repo" idea once the data-protection
-      concern was raised.
-- [ ] **Blocking**: multi-provider LLM client. `LiteLLMClient`
-      (`src/llm/claudeClient.ts`) only supports OpenAI-compatible
-      chat-completions endpoints. UniformBasket may bring a native
-      Anthropic/Gemini/other key — needs a second `LLMClient` implementation
-      (interface already exists) selected via env, not just an
-      OpenAI-compatible proxy assumption.
+- [x] **Done**: `action.yml` (composite action) + `dist/index.js` (bundled
+      via `@vercel/ncc`) built, verified, and pushed by Grege to
+      `AbhishikaAgarwal/myco-bundled-action` (private repo, collaborators
+      invited per-client — not public). Every env var the code reads is
+      cross-checked 1:1 against `action.yml`'s inputs; smoke-tested the real
+      bundle (graceful exit on missing `PR_LINK`; full env-var wiring
+      exercised through to a real outbound GitHub API call).
+      **Needs a follow-up push**: the bundle now also supports the
+      multi-provider LLM client below (`LLM_PROVIDER`, `ANTHROPIC_API_KEY`,
+      `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL` inputs) — this was added
+      *after* Grege's push, so the live repo doesn't have it yet. Rebuilt
+      package ready; needs the same push-it-yourself flow as before.
+- [x] **Unblocked**: multi-provider LLM client. Added `AnthropicClient`
+      (`src/llm/anthropicClient.ts`) — native Anthropic Messages API,
+      implementing the same `LLMClient` interface, reusing the exact same
+      `executeTool()`/path-safety code and retry policy as `claudeClient.ts`
+      (imported, not duplicated, so the two can't silently diverge). New
+      `src/llm/llmClientFactory.ts` picks the implementation via
+      `LLM_PROVIDER` env var (`"openai"` default — zero behavior change for
+      existing configs — or `"anthropic"`). `src/index.ts` now goes through
+      the factory at both call sites (main + validator model) instead of
+      constructing `LiteLLMClient` directly. Note: Gemini doesn't need this —
+      it already works through the existing OpenAI-compatible path via its
+      own compatibility endpoint. 20/20 checks passing (mocks the Anthropic
+      SDK's `messages.stream`, not a live call): constructor validation,
+      correct default/override model selection, the full tool-use round-trip
+      (proves `executeTool()` reuse — including the path-traversal guard —
+      holds for this provider too), retryable-vs-fatal error handling, and
+      all factory branches including the unknown-provider error.
 - [ ] Setup documentation: README's "Getting started" only covers local
       `.env` + `npm start` — no reference for what a consumer's GitHub
       Actions secrets/vars need to be. Needed as source material before
@@ -80,20 +86,32 @@ code. Backend: starting fresh, low-ops.
       payload. `client_id` supports per-client + aggregate-across-clients
       rollups downstream. 18/18 tests passing, including explicit assertions
       that sensitive fields never appear in the serialized payload.
-- [ ] **Needs a decision from Grege**: which low-ops backend to actually
-      stand up (e.g. Supabase — free tier, managed Postgres + auto REST API,
-      no server to run) to receive these POSTs. Claude can't create
-      third-party cloud accounts — needs Grege to create the project and
-      hand back a URL + key, then Claude wires it in and verifies end-to-end.
+- [x] Grege created the Supabase project:
+      `https://liuxmyrceaurpsjiatfk.supabase.co` (publishable key on hand).
+      **Design decision**: do NOT point `METRICS_ENDPOINT` straight at
+      Supabase's auto-generated REST API — PostgREST needs an `apikey`
+      header (not just `Authorization: Bearer`) which `metricsReporter.ts`
+      doesn't send, and it would leak Supabase-specific shape into every
+      client's CI config. Instead: a Supabase Edge Function as the receiver
+      (this was the plan the code comments already called out — "a
+      serverless function, a Supabase edge function, anything"). The edge
+      function validates `Authorization: Bearer <METRICS_API_KEY>` (a
+      secret we set, independent of Supabase's own keys) and inserts into
+      the metrics table using the service-role key (auto-injected into edge
+      functions, never exposed to clients). Keeps `METRICS_ENDPOINT`/
+      `METRICS_API_KEY` fully backend-agnostic from every client's side.
+      **Next**: write the SQL schema + edge function code, then Grege
+      deploys (Claude has no Supabase CLI session/access token — same shape
+      of blocker as the GitHub push).
 - [ ] A small per-client + aggregate dashboard/view once the backend exists
       (even a simple query script or a lightweight page) — not yet built,
       blocked on the backend decision above.
-- [x] Private bundled-action distribution repo created by Grege:
-      `https://github.com/AbhishikaAgarwal/myco-bundled-action`. Bundle is
-      built and ready (see Pilot #2 section) — **blocked on push
-      credentials**, see there. Once pushed, Grege still needs to invite
-      UniformBasket's GitHub account/org as a collaborator when ready to
-      onboard them (private repo, not public).
+- [x] Private bundled-action distribution repo created by Grege and
+      pushed: `https://github.com/AbhishikaAgarwal/myco-bundled-action`.
+      Still needs: invite UniformBasket's GitHub account/org as a
+      collaborator when ready to onboard them (private repo, not public),
+      and a follow-up push once for the multi-provider LLM update (see
+      Pilot #2 section).
 
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 

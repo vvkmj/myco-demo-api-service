@@ -3,7 +3,7 @@ dotenv.config();
 
 import * as fs from "fs";
 import * as path from "path";
-import { LiteLLMClient } from "./llm/claudeClient";
+import { createLLMClient } from "./llm/llmClientFactory";
 import { fetchDiffContext, formatDiffContext } from "./github/prFetcher";
 import { cloneTargetRepo, deriveSparseFolders } from "./repo/repoManager";
 import { scanTestCoverage, autoDiscoverTests } from "./tests/testScanner";
@@ -49,8 +49,8 @@ async function main() {
   const minSeverity = (process.env.MIN_SEVERITY || "P3") as Severity;
   const postComments = process.env.POST_GITHUB_COMMENTS === "true";
 
-  // ── 1. Claude client ────────────────────────────────────────────────────
-  const claude = new LiteLLMClient();
+  // ── 1. LLM client (provider selected via LLM_PROVIDER — "openai" default) ──
+  const claude = createLLMClient();
 
   // ── 2. Fetch diff from GitHub (PR or compare URL) ────────────────────────
   let diff;
@@ -236,7 +236,7 @@ async function main() {
     } else {
       // Use a separate model for validation if configured
       const validatorClaude = process.env.VALIDATOR_MODEL
-        ? new LiteLLMClient(process.env.VALIDATOR_MODEL)
+        ? createLLMClient(process.env.VALIDATOR_MODEL)
         : claude;
 
       validatedFindings = await validateFindings(
