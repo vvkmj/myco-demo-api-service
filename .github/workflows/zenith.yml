@@ -98,6 +98,14 @@ jobs:
           # is set automatically by GitHub Actions.
           GITHUB_ISSUE_LABELS:  ${{ vars.ZENITH_GITHUB_ISSUE_LABELS || '' }}
 
+          # Cross-client metrics (optional — omit METRICS_ENDPOINT entirely to
+          # disable; no behavior change either way). Counts + finding
+          # summaries only — no file paths, code, or root-cause/impact text
+          # ever leave this repo. See src/output/metricsReporter.ts.
+          METRICS_ENDPOINT:     ${{ vars.ZENITH_METRICS_ENDPOINT || '' }}
+          METRICS_API_KEY:      ${{ secrets.ZENITH_METRICS_API_KEY }}
+          CLIENT_ID:            ${{ vars.ZENITH_CLIENT_ID || '' }}
+
           TARGET_REPO_PATH:     './target-repo'
 
         run: npm run review

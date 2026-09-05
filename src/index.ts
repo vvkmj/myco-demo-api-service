@@ -14,6 +14,7 @@ import { parseFindings } from "./review/finding";
 import { validateFindings, buildValidationSection, ValidatedFinding } from "./validate/findingValidator";
 import { createTicketCreator } from "./tickets/ticketCreator";
 import { writeFindingsJson, loadTicketHashes, saveTicketHash } from "./output/findingsExporter";
+import { reportMetrics } from "./output/metricsReporter";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -378,6 +379,9 @@ async function main() {
       // Overwrite findings.json with validated data
       findingsJsonPath = writeFindingsJson(outputDir, inputUrl, reviewMarkdown, validatedFindings, true);
       console.log(`   📄  ${findingsJsonPath} (updated with validation results)`);
+
+      // ── 9d. Report metrics (opt-in — no-op unless METRICS_ENDPOINT is set) ──
+      await reportMetrics(diff, inputUrl, validatedFindings);
     }
   }
 
