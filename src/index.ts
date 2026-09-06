@@ -102,7 +102,12 @@ async function main() {
   const repoPath = process.env.TARGET_REPO_PATH || "./target-repo";
   const sparseFolders = deriveSparseFolders(diff.changedFiles.map((f) => f.filename));
 
-  cloneTargetRepo(repoUrl, branch, repoPath, sparseFolders);
+  // Needed for a private target repo — a plain unauthenticated clone URL
+  // only ever worked for public repos (git fails fast with a generic
+  // "could not read Username" error otherwise). withAuth() in
+  // repoManager.ts only embeds this into a github.com URL, never an
+  // arbitrary TARGET_REPO host.
+  cloneTargetRepo(repoUrl, branch, repoPath, sparseFolders, process.env.GITHUB_TOKEN);
 
   // ── 4. Build static code context from import graph ──────────────────────
   let codeContext: string | undefined;

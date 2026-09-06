@@ -14,6 +14,46 @@ function assertSafeArg(value: string, label: string): void {
 }
 
 /**
+ * Embeds a token into a github.com HTTPS URL for git-level auth, the same
+ * way actions/checkout does it internally. Deliberately scoped to exactly
+ * "github.com" (case-insensitive) — never embed a live token into a URL
+ * pointed at an arbitrary host (a misconfigured or attacker-influenced
+ * TARGET_REPO could otherwise leak the token to a third party the moment
+ * git tries to connect). Returns the URL unchanged if it isn't a github.com
+ * https URL, or if no token was given.
+ */
+export function withAuth(repoUrl: string, token: string | undefined): string {
+  if (!token) return repoUrl;
+  let parsed: URL;
+  try {
+    parsed = new URL(repoUrl);
+  } catch {
+    return repoUrl; // not a well-formed URL (e.g. a local path) — leave it alone
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "github.com") {
+    return repoUrl;
+  }
+  parsed.username = "x-access-token";
+  parsed.password = token;
+  return parsed.toString();
+}
+
+/** Redacts a possibly-token-embedded URL for safe logging — defense in depth on top of the CI runner's own secret masking, not a replacement for it. */
+export function redactForLog(repoUrl: string): string {
+  try {
+    const parsed = new URL(repoUrl);
+    if (parsed.password || parsed.username) {
+      parsed.username = "***";
+      parsed.password = "";
+      return parsed.toString();
+    }
+    return repoUrl;
+  } catch {
+    return repoUrl;
+  }
+}
+
+/**
  * Clone or pull a target repo with optional sparse checkout.
  *
  * If the target directory already exists, fetch + hard-reset to get the
@@ -26,19 +66,32 @@ function assertSafeArg(value: string, label: string): void {
  *
  * @param sparseFolders  Repo-relative folder paths to sparse-checkout.
  *                       Pass an empty array to check out the full tree.
+ * @param authToken      Optional token (typically GITHUB_TOKEN) embedded
+ *                        into the clone/remote URL for a private
+ *                        github.com repo. Without this, cloning a private
+ *                        target repo fails with git's own generic
+ *                        "could not read Username" error — there is no
+ *                        other auth path today (see ARCHITECTURE.md).
  */
 export function cloneTargetRepo(
   repoUrl: string,
   branch: string,
   targetDir: string,
-  sparseFolders: string[] = []
+  sparseFolders: string[] = [],
+  authToken?: string
 ): void {
   assertSafeArg(repoUrl, "repo URL");
   assertSafeArg(branch, "branch name");
 
+  const authedUrl = withAuth(repoUrl, authToken);
+
   if (fs.existsSync(targetDir)) {
     console.log(`\n📦  Repo exists at ${targetDir} — pulling latest (${branch})...`);
     try {
+      // Re-set the remote URL every time (cheap, idempotent) so a stale or
+      // differently-authed remote from a prior run doesn't cause a
+      // confusing auth failure here instead of at clone time.
+      execFileSync("git", ["-C", targetDir, "remote", "set-url", "origin", authedUrl], { stdio: "inherit" });
       execFileSync("git", ["-C", targetDir, "fetch", "--depth=1"], { stdio: "inherit" });
       execFileSync("git", ["-C", targetDir, "reset", "--hard", `origin/${branch}`], { stdio: "inherit" });
       console.log("✅  Repo up to date.");
@@ -49,10 +102,10 @@ export function cloneTargetRepo(
     }
   }
 
-  console.log(`\n📦  Cloning ${repoUrl} (${branch}) into ${targetDir}...`);
+  console.log(`\n📦  Cloning ${redactForLog(authedUrl)} (${branch}) into ${targetDir}...`);
   execFileSync(
     "git",
-    ["clone", "--depth=1", "--filter=blob:none", "--sparse", "--branch", branch, repoUrl, targetDir],
+    ["clone", "--depth=1", "--filter=blob:none", "--sparse", "--branch", branch, authedUrl, targetDir],
     { stdio: "inherit" }
   );
 
