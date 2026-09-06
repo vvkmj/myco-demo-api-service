@@ -186,11 +186,22 @@ code. Backend: starting fresh, low-ops.
       updated. Checked every other "Zenith" occurrence in the codebase —
       the rest are code comments and the console banner ("PR Reviewer
       Agent" — generic, not the codename), nothing else client-visible.
-      **Still open**: product name still being finalized (Grege +
-      co-founder) — blocks only cosmetic public-facing items now (PR bot
-      display name in the console banner if that's ever changed to include
-      a real name, an App listing name if/when the GitHub App is built,
-      `package.json` name, repo rename from `pr-reviewer-agent`/`zenith`).
+      **Resolved**: product name finalized — **Myco**. `PRODUCT_LABEL`
+      default updated to `"myco"` everywhere (`ticketCreator.ts`,
+      `action.yml`, `myco-bundled-action`'s README, `ONBOARDING.md`,
+      `zenith.yml` comment), console banner now says "Myco PR Reviewer",
+      `package.json` name is `myco-pr-reviewer`. Verified via cloud mirror
+      before committing: clean typecheck, both ticket-creator test suites
+      updated and passing (26 checks). Also rebuilt the bundle with
+      `ncc -m` (minified, 2.34MB → 1.27MB) while in there — closes part of
+      the code-exposure gap (see below), though string literals/prompts are
+      still plainly readable in the bundle regardless (minification only
+      mangles names, not string content — confirmed directly: grepped the
+      review system prompt text out of the minified `dist/index.js`).
+      **Still open (cosmetic, not blocking)**: repo rename from
+      `pr-reviewer-agent`/`zenith` (this private source repo — clients never
+      see it, so genuinely low priority), an App listing name if/when the
+      GitHub App is built.
       None of these block integrating with a client today.
 
 ## Phase 1 — Needed for a credible pilot (not just a hacked demo)
