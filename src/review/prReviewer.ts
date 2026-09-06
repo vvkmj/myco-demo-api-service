@@ -15,6 +15,8 @@ export interface ReviewInput {
   outputDir: string;
   /** Minimum severity to include in the review. Findings below this are dropped. */
   minSeverity?: Severity;
+  /** Best-effort text fetched from links found in the PR description (see src/intent/linkFetcher.ts). Undefined/empty if none found or link-following is disabled. */
+  linkedContext?: string;
 }
 
 export interface ReviewOutput {
@@ -33,7 +35,7 @@ export async function reviewPR(
   input: ReviewInput,
   claude: LLMClient
 ): Promise<ReviewOutput> {
-  const { diff, diffMarkdown, repoPath, codeContext, testCoverageSummary, outputDir, minSeverity } = input;
+  const { diff, diffMarkdown, repoPath, codeContext, testCoverageSummary, outputDir, minSeverity, linkedContext } = input;
 
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
@@ -47,7 +49,7 @@ export async function reviewPR(
   const fileStream = fs.createWriteStream(outputPath, { encoding: "utf-8" });
   console.log(`\n🔬 Running SDET review... (streaming → ${outputPath})`);
 
-  const prompt = buildReviewPrompt(diff, diffMarkdown, codeContext, testCoverageSummary, minSeverity);
+  const prompt = buildReviewPrompt(diff, diffMarkdown, codeContext, testCoverageSummary, minSeverity, linkedContext);
   const review = await claude.generate(prompt, repoPath, fileStream);
 
   if (!review || review.trim().length === 0) {
@@ -69,16 +71,39 @@ function severityThresholdNote(minSeverity: Severity | undefined): string {
     : "";
 }
 
+function buildIntentSection(diff: DiffContext, linkedContext: string | undefined): string {
+  const description = diff.description?.trim();
+  if (!description && !linkedContext) {
+    return `## Stated Intent\n\n_No PR description was provided, and no links were found to follow. Intent is unknown — do not guess or invent one. Skip the intent-alignment check in step 5 below and note in the Executive Summary that intent could not be assessed._`;
+  }
+
+  const parts = [`## Stated Intent`, ``, `### PR description (as written by the author)`, description || "_Empty._"];
+
+  if (linkedContext) {
+    parts.push(
+      ``,
+      `### Linked context (fetched from link(s) in the description above)`,
+      `Best-effort only — some links may show as unavailable below (auth-gated or JS-rendered pages can't be read this way). Treat unavailable links as referenced-but-unread, not as evidence of anything.`,
+      ``,
+      linkedContext
+    );
+  }
+
+  return parts.join("\n");
+}
+
 function buildReviewPrompt(
   diff: DiffContext,
   diffMarkdown: string,
   codeContext: string | undefined,
   testCoverageSummary: string,
-  minSeverity?: Severity
+  minSeverity?: Severity,
+  linkedContext?: string
 ): string {
   const hasTests = testCoverageSummary.trim().length > 0;
   const hasCodeContext = !!codeContext && codeContext.trim().length > 0;
   const thresholdNote = severityThresholdNote(minSeverity);
+  const hasIntent = !!diff.description?.trim() || !!linkedContext;
 
   const header =
     diff.sourceType === "pr"
@@ -86,6 +111,7 @@ function buildReviewPrompt(
       : `**Tag diff — "${diff.title}"**\nRepo: ${diff.owner}/${diff.repo} · \`${diff.baseRef}\` → \`${diff.headRef}\` (${diff.commits.length} commits)`;
 
   const inputLabel = diff.sourceType === "pr" ? "PR" : "release";
+  const intentSection = buildIntentSection(diff, linkedContext);
 
   return `You are a senior SDET reviewing a production ${inputLabel}. Be precise and concise — no filler prose.
 ${thresholdNote}
@@ -93,19 +119,25 @@ ${header}
 
 ---
 
+${intentSection}
+
+---
+
 ## Instructions
 
-1. Read the diff below. Each diff line is prefixed with its absolute file line number: \`+44: added code\`, \` 44: context\`, \`-43: removed code\`. Use these numbers directly when filling in the **File:** field — do not recount from @@ headers. The code context section already includes the changed files and their direct import dependencies. Use the \`read_file\` tool only for files you cannot see yet but have specific reason to check — for example: a caller of a changed function (look for the import path in the code context or diff), a file that re-exports a changed symbol, or a sibling module in the same package. Read files by their exact path; do not guess speculatively. Prioritise callers and direct dependents over transitive dependencies.
-2. Report only bugs, regressions, and coverage gaps you can ground in the diff or a file you have actually read. Do not speculate.
-3. Focus on new and materially changed code paths. Do not flag pre-existing issues that this diff did not touch.
-4. For each finding, complete every field of the card. No partial cards.
+1. Start with the Stated Intent section above. Before looking at any code, form a one-sentence understanding of what this change is supposed to accomplish — from the PR description and, if present, the fetched linked context. If intent is unknown (empty description, no usable links), say so explicitly later rather than guessing.
+2. Read the diff below. Each diff line is prefixed with its absolute file line number: \`+44: added code\`, \` 44: context\`, \`-43: removed code\`. Use these numbers directly when filling in the **File:** field — do not recount from @@ headers. The code context section already includes the changed files and their direct import dependencies. Use the \`read_file\` tool only for files you cannot see yet but have specific reason to check — for example: a caller of a changed function (look for the import path in the code context or diff), a file that re-exports a changed symbol, or a sibling module in the same package. Read files by their exact path; do not guess speculatively. Prioritise callers and direct dependents over transitive dependencies.
+3. Report only bugs, regressions, and coverage gaps you can ground in the diff or a file you have actually read. Do not speculate.
+4. Focus on new and materially changed code paths. Do not flag pre-existing issues that this diff did not touch.
+5. Intent-alignment check (only if intent is known — see step 1): compare what the diff actually does against the stated intent. If the implementation doesn't do what was described — something promised is missing, partially done, or the diff does something materially different or additional that the description doesn't mention — raise it as its own finding card in Section 2, titled starting with "Intent mismatch:". In that card's **Root cause**, quote or closely paraphrase the specific part of the stated intent and state exactly what the diff does instead. Score its severity using the same BLOCKER/P1/P2/P3 rubric below (a mismatch that ships silently broken behavior is at least P1; a scope difference that's harmless is P3). Do not raise this finding type at all if intent was unknown per step 1 — an absent or unreadable description is not itself a finding.
+6. For each finding, complete every field of the card. No partial cards.
 
 ---
 
 ## Output Format
 
 ### Section 1 — Executive Summary
-Two to three sentences maximum. State the **Risk Level** (Low / Medium / High / Critical) and **Recommendation** (Approve / Request Changes / Block) on their own line.
+Two to three sentences maximum. State the **Risk Level** (Low / Medium / High / Critical) and **Recommendation** (Approve / Request Changes / Block) on their own line.${hasIntent ? "" : " Also note in one clause that intent could not be assessed (no usable PR description or linked content)."}
 
 ---
 

@@ -9,6 +9,7 @@ import { cloneTargetRepo, deriveSparseFolders } from "./repo/repoManager";
 import { scanTestCoverage, autoDiscoverTests } from "./tests/testScanner";
 import { buildCodeContext, deriveEntryPoints } from "./code/codeWalker";
 import { reviewPR, Severity } from "./review/prReviewer";
+import { fetchLinkedContext } from "./intent/linkFetcher";
 import { postReviewComments, postConfirmedInlineComments, postTicketLinks, fetchAlreadyRaisedFindings, AlreadyRaisedResult } from "./github/prCommenter";
 import { parseFindings } from "./review/finding";
 import { validateFindings, buildValidationSection, ValidatedFinding } from "./validate/findingValidator";
@@ -70,6 +71,26 @@ async function main() {
   }
 
   const diffMarkdown = formatDiffContext(diff);
+
+  // ── 2.5. Intent: follow links in the PR description ──────────────────────
+  // Best-effort — most linked docs (Notion/Linear/Jira/Confluence) are
+  // either auth-gated or client-rendered and won't yield real content to an
+  // unauthenticated fetch; fetchLinkedContext reports per-link status
+  // rather than silently returning nothing, so the model (and the review
+  // output) can tell "referenced but unreadable" apart from "no link at all".
+  const followIntentLinks = process.env.FOLLOW_INTENT_LINKS !== "false";
+  let linkedContext: string | undefined;
+  if (followIntentLinks && diff.description) {
+    console.log("\n🔗  Checking PR description for linked context (intent)...");
+    try {
+      linkedContext = await fetchLinkedContext(diff.description);
+      if (linkedContext) {
+        console.log(`✅  Linked context fetched (${linkedContext.length} chars, best-effort).`);
+      }
+    } catch (err: any) {
+      console.log(`  ⚠️   Linked-context fetch failed, continuing without it: ${err.message}`);
+    }
+  }
 
   // ── 3. Clone / pull target repo ──────────────────────────────────────────
   // AUTO-DERIVE: if TARGET_REPO is not set, default to the repo the PR belongs to.
@@ -168,6 +189,7 @@ async function main() {
       testCoverageSummary: testCoverage.summary,
       outputDir,
       minSeverity,
+      linkedContext,
     },
     claude
   );
