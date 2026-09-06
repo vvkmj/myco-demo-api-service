@@ -112,10 +112,23 @@ code. Backend: starting fresh, low-ops.
       wrapper; `index.dashboard.ts` is a generated single-file version for
       pasting straight into the Supabase dashboard, no CLI needed) are
       written and in the repo. Full deploy steps in `supabase/README.md`.
-      **Still needs Grege**: run the SQL, deploy the function, set its
-      `METRICS_INGEST_KEY` secret, and hand back the deployed function URL
-      — same shape of blocker as the GitHub push (Claude has no Supabase
-      CLI session/access token for this account).
+      **Done**: Grege ran the SQL, deployed `ingest-metrics` via the
+      dashboard (pasting `index.dashboard.ts`), and set `METRICS_INGEST_KEY`.
+      Hit two real deploy snags along the way, both fixed: (1) Supabase's
+      own gateway rejects any `Authorization` header that isn't a real
+      Supabase JWT *before* our function's own bearer-token check ever
+      runs — surfaced as a live 401 `UNAUTHORIZED_INVALID_JWT_FORMAT`; fixed
+      by turning off "Enforce JWT Verification" for this function in the
+      dashboard, since we intentionally use our own bearer-token auth
+      instead of a Supabase key. (2) Windows/PowerShell argument-quoting
+      mangled the JSON payload in curl's `-d` a few different ways; fixed by
+      writing the JSON to a file and using `--data-binary @file`, which
+      sidesteps PowerShell-to-native-argv quoting entirely. Live
+      smoke-tested from Grege's machine: confirmed `HTTP 200 {"ok":true}`
+      and a matching row in `pr_review_metrics`. **Deployed URL**:
+      `https://liuxmyrceaurpsjiatfk.supabase.co/functions/v1/ingest-metrics`
+      — this is what goes into a client's `METRICS_ENDPOINT` secret,
+      paired with `METRICS_API_KEY` = the `METRICS_INGEST_KEY` value.
 - [ ] A small per-client + aggregate dashboard/view once the backend exists
       (even a simple query script or a lightweight page) — not yet built,
       blocked on the backend decision above.
