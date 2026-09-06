@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as fs from "fs";
 import { LLMClient, executeTool, isRetryable, MAX_API_RETRIES, RETRY_BASE_DELAY_MS } from "./claudeClient";
 
-// ────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // Native Anthropic Messages API client — for clients who bring a raw
 // Anthropic key rather than an OpenAI-compatible one (LiteLLMClient only
 // speaks the OpenAI chat-completions shape; Anthropic's API is not
@@ -48,6 +48,16 @@ export class AnthropicClient implements LLMClient {
   constructor(modelOverride?: string) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error("Missing env var: ANTHROPIC_API_KEY");
+    // Mirror the check in claudeClient.ts for the opposite mismatch: an
+    // OpenAI-shaped key passed here would otherwise fail as an opaque 401
+    // from Anthropic's API instead of naming the actual misconfiguration.
+    if (apiKey.startsWith("sk-") && !apiKey.startsWith("sk-ant-")) {
+      throw new Error(
+        'The key passed as anthropic_api_key doesn\'t look like a native Anthropic key (those start with "sk-ant-"). ' +
+        'If this is an OpenAI (or other OpenAI-compatible) key, remove llm_provider: anthropic and pass it as ' +
+        'litellm_api_key instead — see README.md.'
+      );
+    }
     this.modelName = modelOverride || process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
     this.client = new Anthropic({
       apiKey,

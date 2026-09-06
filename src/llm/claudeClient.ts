@@ -84,6 +84,19 @@ export class LiteLLMClient implements LLMClient {
   constructor(modelOverride?: string) {
     const apiKey = process.env.LITELLM_API_KEY;
     if (!apiKey) throw new Error("Missing env var: LITELLM_API_KEY");
+    // A native Anthropic key (sk-ant-...) sent to an OpenAI-compatible
+    // endpoint fails as a generic 401 from OpenAI itself — confusing,
+    // because the key looks fine, it's just aimed at the wrong API. Catch
+    // the mismatch here with an actionable message instead of letting it
+    // surface as an opaque AuthenticationError deep in the OpenAI SDK.
+    if (apiKey.startsWith("sk-ant-")) {
+      throw new Error(
+        'The key passed as litellm_api_key looks like a native Anthropic API key (starts with "sk-ant-"), ' +
+        'but llm_provider is "openai" (the default), which sends requests to an OpenAI-compatible endpoint. ' +
+        'Set llm_provider: anthropic and pass this key as anthropic_api_key instead — see README.md\'s ' +
+        '"Bringing a raw Anthropic key" section.'
+      );
+    }
     const baseURL = process.env.LITELLM_BASE_URL;
     if (!baseURL) throw new Error("Missing env var: LITELLM_BASE_URL");
     this.modelName = modelOverride || process.env.LITELLM_MODEL || "claude-sonnet-4-6";
