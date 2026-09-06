@@ -134,10 +134,14 @@ code. Backend: starting fresh, low-ops.
       blocked on the backend decision above.
 - [x] Private bundled-action distribution repo created by Grege and
       pushed: `https://github.com/AbhishikaAgarwal/myco-bundled-action`.
-      Still needs: invite UniformBasket's GitHub account/org as a
-      collaborator when ready to onboard them (private repo, not public),
-      and a follow-up push once for the multi-provider LLM update (see
-      Pilot #2 section).
+      **Currently public, temporarily** — a collaborator invite alone
+      doesn't let a different account's `GITHUB_TOKEN` resolve a private
+      `uses:` reference (discovered when the co-founder's test repo
+      failed with "repository not found"); see the Phase 2 GitHub App
+      item for the real fix and the PAT alternative. Switch back to
+      private (with a PAT per client) once that decision is made — don't
+      leave it public by default for a real external client without
+      revisiting this.
 
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 
@@ -234,7 +238,41 @@ code. Backend: starting fresh, low-ops.
       installation-token minting via `@octokit/auth-app`), hosting, async
       job runner (webhook can't block on a multi-minute pipeline),
       per-installation config storage, encrypted secrets store for
-      client-supplied BYO keys.
+      client-supplied BYO keys. Rough estimate for an MVP (no client-facing
+      settings UI): 4-7 focused days — half a day each for app
+      registration/manifest, webhook receiver, and installation-token
+      minting; ~1 day for async execution (cheapest path: webhook triggers
+      our own GH Actions workflow via `repository_dispatch` rather than a
+      hand-rolled job queue); half a day to a day swapping `prCommenter.ts`
+      to post via the installation token; half a day for per-installation
+      config (reusing the existing Supabase project); a day+ for a real
+      encrypted secrets store if clients stop managing their own key in
+      their own repo secrets; a day minimum for live end-to-end testing.
+      **Real, not just an incremental fix**: this replaces the whole
+      distribution model (client installs the App, no workflow YAML, no
+      `uses:` reference at all) and would also be the actual fix for the
+      black-box code-exposure gap, since the bundle would never leave our
+      server. Sequence after BYO-key and ticket-creation get their first
+      live confirmation.
+      **Trigger for this**: found 2026-09 while onboarding the first test
+      client — a private action repo referenced via `uses:` from a
+      *different* GitHub account does not resolve using the automatic
+      `GITHUB_TOKEN`, even with the consuming account invited as a
+      collaborator (confirmed against GitHub's own docs: the built-in
+      "share a private action" setting only extends to other repos owned
+      by the *same* account/org, not a genuinely different one). Until
+      this is built, the two working options are: (a) make
+      `myco-bundled-action` public — simplest, but drops the "only invited
+      clients can see the bundle" boundary (the bundle's actual protection
+      against a determined reader was already weak either way — see the
+      product_label/minification commit) — or (b) issue each client a
+      fine-grained, read-only, single-repo Personal Access Token and have
+      their workflow `actions/checkout` the action repo with it before
+      referencing it locally (`uses: ./`). **Decision for the first real
+      external client, not yet made**: PAT per client (works today, some
+      ongoing issue/rotate overhead) vs. wait for the GitHub App (no
+      overhead per client, bigger upfront build). For now (internal
+      testing only, co-founder's dummy repo): went public.
 - [ ] Persistent knowledge graph across the codebase (today: a fresh 2-hop
       import-graph walk per PR, discarded after — see `src/code/codeWalker.ts`).
 - [x] **Intent checking** — the reviewer now reads the PR description as
