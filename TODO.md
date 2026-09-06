@@ -237,9 +237,33 @@ code. Backend: starting fresh, low-ops.
       client-supplied BYO keys.
 - [ ] Persistent knowledge graph across the codebase (today: a fresh 2-hop
       import-graph walk per PR, discarded after — see `src/code/codeWalker.ts`).
-- [ ] Ingestion of linked PRDs/Confluence/meeting transcripts from the PR
-      description — the "intent" half of the product's positioning isn't
-      wired up; today "intent" is just the PR title/body text.
+- [x] **Intent checking** — the reviewer now reads the PR description as
+      stated intent, follows up to 3 links found in it (best-effort,
+      SSRF-guarded), and explicitly checks the diff against that intent,
+      flagging mismatches as normal findings ("Intent mismatch: ...") —
+      same card format, so no downstream changes needed (parsing, inline
+      comments, CI gate, tickets, metrics all already handle it).
+      `src/intent/linkFetcher.ts`. Toggle: `FOLLOW_INTENT_LINKS` /
+      `follow_intent_links` (default true). 24/24 + 13/13 new checks
+      passing (URL extraction, SSRF guard incl. redirect re-validation,
+      HTML stripping, prompt assembly against the real reviewPR() path),
+      full suite (89 checks) still green. Bundle rebuilt and pushed to
+      `myco-bundled-action`.
+      **Real limitation, not solved**: most linked docs teams actually
+      use — Notion, Linear, Jira Cloud, Confluence — are auth-gated or
+      client-rendered, so an unauthenticated fetch usually can't read
+      them; those surface as "referenced but unread" rather than being
+      silently ignored or guessed at, but the actual content still isn't
+      read. A team whose specs live in one of those tools gets full
+      benefit only if the PR description itself restates the key intent
+      in plain text. Proper support for those tools would need
+      per-client OAuth/API tokens for each one — a real, separate
+      integration project, not attempted here.
+      **Still unverified**: a live LLM call actually catching a real,
+      deliberate intent/implementation mismatch — the deterministic
+      pieces (fetching, prompt assembly) are tested; whether the model
+      reliably reasons about intent alignment well needs one real test
+      run against a PR with a deliberate mismatch.
 - [ ] True multi-repo / cross-service dependency tracing (today: a single
       `TARGET_REPO` per run, auto-derived from the PR's own repo unless
       overridden).

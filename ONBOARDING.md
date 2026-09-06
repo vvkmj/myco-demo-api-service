@@ -117,6 +117,16 @@ Opt into metrics reporting (see `supabase/README.md` for the endpoint/key):
           metrics_api_key: ${{ secrets.METRICS_API_KEY }}
 ```
 
+Disable intent-link fetching (e.g. their org restricts CI egress to
+arbitrary URLs) — the PR description itself is still used for intent
+checking either way:
+
+```yaml
+        with:
+          # ...whatever's above, plus:
+          follow_intent_links: false
+```
+
 Full input reference: `myco-bundled-action`'s own `action.yml`/`README.md`.
 
 ## 3. What the client should expect
@@ -128,10 +138,18 @@ Full input reference: `myco-bundled-action`'s own `action.yml`/`README.md`.
   can be used as a required check to actually block merges, or left as a
   non-required check if they just want visibility first.
 - Optional tickets (Jira or GitHub Issues) if configured.
+- Before reviewing, the agent reads the PR description as stated intent
+  and (unless `follow_intent_links: false`) fetches any links it contains
+  to use as additional intent context — flag any resulting "Intent
+  mismatch" findings the same as any other finding (they show up as
+  inline comments too).
 - Nothing leaves their repo except: the PR diff/code sent to their own
-  configured LLM provider, and — only if they opt in — the minimized
-  metrics summary (counts + finding titles/severity/verdict; never file
-  paths, root cause, fix text, or code) to the metrics endpoint.
+  configured LLM provider; outbound fetches to whatever URLs appear in
+  the PR description text (intent checking, see above — disable with
+  `follow_intent_links: false` if their org restricts CI egress); and —
+  only if they opt in — the minimized metrics summary (counts + finding
+  titles/severity/verdict; never file paths, root cause, fix text, or
+  code) to the metrics endpoint.
 
 ## 4. Known limitations to set expectations on
 
@@ -147,3 +165,12 @@ Full input reference: `myco-bundled-action`'s own `action.yml`/`README.md`.
   hasn't yet been run against a live third-party key end-to-end — worth a
   first real run being watched closely rather than assumed silent.
 - `LinearTicketCreator` doesn't exist yet — Jira and GitHub Issues only.
+- Intent checking reads the PR description and follows links in it, but
+  most linked docs (Notion, Linear, Jira Cloud, Confluence) are auth-gated
+  or client-rendered and won't yield real content to an unauthenticated
+  fetch — those show as "referenced but unread" in the review rather than
+  being silently skipped, but the agent still can't act on their content.
+  Works best when the PR description itself states the intent in plain
+  text, even if it also links out. Also unverified: a live LLM call
+  actually catching a real, deliberate intent/implementation mismatch —
+  worth watching closely on the first few PRs.
