@@ -175,17 +175,25 @@ every fix below is live-tested against the real GitHub API, not mocked:
       an actionable error naming the exact input to change, before any
       network call. Commit `16df771` (Zenith) / `e3ba33f` (bundled
       action, includes the rebuilt bundle).
-- [x] `publish.ps1` "didn't work" (no error captured from the user) —
-      root-caused anyway: the script set `$ErrorActionPreference =
-      "Stop"`, and git writes its normal, successful push progress to
-      stderr; PowerShell treats any stderr text from a native command as
-      a terminating error under `"Stop"` regardless of exit code, so the
-      very first `git push` in the script would abort it even on
-      success. Removed the blanket setting, check `$LASTEXITCODE`
-      explicitly per command instead. Commit `e3ba33f`. **Not yet
-      confirmed working on the user's actual machine** — the theory fits
-      the symptom exactly (workaround: running the same git commands by
-      hand worked fine) but hasn't been re-run through the fixed script.
+- [x] `publish.ps1` "didn't work" — two separate bugs, found one at a
+      time because the second was hidden behind the first. (1) The
+      script set `$ErrorActionPreference = "Stop"`, and git writes its
+      normal, successful push progress to stderr; PowerShell treats any
+      stderr text from a native command as a terminating error under
+      `"Stop"` regardless of exit code, so the very first `git push`
+      would abort the script even on success. Fixed: removed the
+      blanket setting, check `$LASTEXITCODE` explicitly per command
+      instead (commit `e3ba33f`). (2) Re-running still failed, this
+      time with "running scripts is disabled on this system"
+      (PSSecurityException) — the user's machine has a PowerShell
+      execution policy that blocks unsigned local scripts outright, a
+      separate and more common issue. Fixed: added `publish.cmd`, a
+      wrapper that runs `publish.ps1` with `-ExecutionPolicy Bypass`
+      scoped to that one process only — no persistent policy change on
+      the user's machine (commit `1f1be44`). **Still not confirmed
+      working end-to-end on the user's actual machine** — both fixes
+      are reasoned from the exact error text, not yet observed
+      succeeding live.
 - [ ] The live run itself still hasn't completed successfully end to
       end — each retry has hit a new, different blocking error one stage
       further into the pipeline (tag → cross-account resolution → clone
