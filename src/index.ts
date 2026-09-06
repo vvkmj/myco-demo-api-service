@@ -42,7 +42,7 @@ function requireEnv(name: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("\n🤖  PR Reviewer Agent — Senior SDET\n");
+  console.log("\n🤖  Myco PR Reviewer — Senior SDET\n");
 
   const inputUrl  = requireEnv("PR_LINK");
   const outputBase = process.env.OUTPUT_DIR || "./reviews";

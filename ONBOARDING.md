@@ -10,9 +10,9 @@ this product's private code.
 - [ ] Invite the client's GitHub account/org as a **collaborator** on
       `AbhishikaAgarwal/myco-bundled-action` (it's private — their CI can't
       resolve `uses: AbhishikaAgarwal/myco-bundled-action@v1` without this).
-- [ ] Decide `PRODUCT_LABEL` if/when the name is finalized — until then,
-      tickets get a neutral `ai-code-review` label instead of an internal
-      codename. No action needed from the client either way.
+- [ ] Product name is finalized: **Myco**. Tickets get a `myco` /
+      `myco-confirmed-bug` label by default — override per-client via
+      `product_label` only if they want their own label scheme instead.
 
 ## 1. Client-side secrets (repo Settings → Secrets and variables → Actions)
 

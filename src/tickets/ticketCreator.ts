@@ -181,12 +181,11 @@ export class JiraTicketCreator implements TicketCreator {
       ],
     };
 
-    // No hardcoded product name here on purpose — the name isn't finalized
-    // yet, and a client-visible Jira label is exactly the kind of thing
-    // that shouldn't leak an internal codename. PRODUCT_LABEL is the one
-    // place to update once a name is picked; GitHubIssuesTicketCreator
-    // below uses the same env var so both providers stay in sync.
-    const productLabel = process.env.PRODUCT_LABEL || "ai-code-review";
+    // Product name is finalized: Myco. Still overridable per-client via
+    // PRODUCT_LABEL (e.g. a client who wants their own label scheme
+    // instead of ours) — GitHubIssuesTicketCreator below uses the same env
+    // var so both providers stay in sync.
+    const productLabel = process.env.PRODUCT_LABEL || "myco";
     const baseLabels = [productLabel, "auto-generated", finding.severity.toLowerCase()];
     const extraLabels = (process.env.JIRA_LABELS || "")
       .split(",")
@@ -269,10 +268,9 @@ export class GitHubIssuesTicketCreator implements TicketCreator {
       .map((l) => l.trim())
       .filter(Boolean);
     // Per-finding severity label is added in create() since it isn't known here.
-    // Same PRODUCT_LABEL env var as JiraTicketCreator — no hardcoded
-    // codename in a client-visible label while the product name is still
-    // being finalized (see comment on JiraTicketCreator's baseLabels).
-    const productLabel = process.env.PRODUCT_LABEL || "ai-code-review";
+    // Same PRODUCT_LABEL env var as JiraTicketCreator (see comment there) —
+    // defaults to "myco", overridable per-client.
+    const productLabel = process.env.PRODUCT_LABEL || "myco";
     this.labels = [...new Set([`${productLabel}-confirmed-bug`, ...extraLabels])];
   }
 
