@@ -143,6 +143,57 @@ code. Backend: starting fresh, low-ops.
       leave it public by default for a real external client without
       revisiting this.
 
+## First live run against the co-founder's test repo (2026-09-06)
+
+Raising a real PR against `gregerodrigues/myco-test` surfaced a chain of
+real, previously-unexercised bugs, each fixed and pushed in sequence —
+every fix below is live-tested against the real GitHub API, not mocked:
+
+- [x] `unable to find version 'v1'` — no `v1` tag had ever been created.
+      Fixed by pushing one; README's "Publishing an update" section
+      rewritten with explicit, hard-to-skip commands (the vagueness of
+      "tag a new version" is what let the step get skipped originally).
+- [x] `repository not found` — cross-account private-action resolution
+      limitation (see the Phase 2 GitHub App item above for the full
+      root cause). Decision for now: made `myco-bundled-action` public.
+- [x] `could not read Username for 'https://github.com'` cloning the
+      *target* repo — `cloneTargetRepo()` never embedded any auth at
+      all; a real, long-standing bug that had simply never been
+      exercised against a private target repo before. Fixed in
+      `src/repo/repoManager.ts` (`withAuth()` / `redactForLog()`,
+      scoped to `github.com` https URLs only so a live token can never
+      leak to an arbitrary `TARGET_REPO` host) — commit `8aaeaae`
+      (Zenith) / `6dfc560` (bundled action). Verified with real
+      (non-mocked) `git clone` calls, not just unit tests.
+- [x] `AuthenticationError: 401 Incorrect API key provided` — an
+      Anthropic key (`sk-ant-...`) was passed as `litellm_api_key` with
+      `llm_provider` left at its default (`openai`), so it went to
+      OpenAI's endpoint and failed as an opaque 401 from deep in the
+      OpenAI SDK. Not a pipeline bug — a config mismatch — but the
+      error was bad enough to fix: both `LiteLLMClient` and
+      `AnthropicClient` now check key shape at construction and throw
+      an actionable error naming the exact input to change, before any
+      network call. Commit `16df771` (Zenith) / `e3ba33f` (bundled
+      action, includes the rebuilt bundle).
+- [x] `publish.ps1` "didn't work" (no error captured from the user) —
+      root-caused anyway: the script set `$ErrorActionPreference =
+      "Stop"`, and git writes its normal, successful push progress to
+      stderr; PowerShell treats any stderr text from a native command as
+      a terminating error under `"Stop"` regardless of exit code, so the
+      very first `git push` in the script would abort it even on
+      success. Removed the blanket setting, check `$LASTEXITCODE`
+      explicitly per command instead. Commit `e3ba33f`. **Not yet
+      confirmed working on the user's actual machine** — the theory fits
+      the symptom exactly (workaround: running the same git commands by
+      hand worked fine) but hasn't been re-run through the fixed script.
+- [ ] The live run itself still hasn't completed successfully end to
+      end — each retry has hit a new, different blocking error one stage
+      further into the pipeline (tag → cross-account resolution → clone
+      auth → LLM auth). Next retry (after the client fixes their
+      workflow's `llm_provider`/`anthropic_api_key` config) is the first
+      one that could plausibly reach an actual review output; whatever
+      breaks next (posting comments, ticket creation) is still unknown.
+
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 
 - [x] Shell-injection risk in `src/repo/repoManager.ts` — `execSync` with
@@ -222,8 +273,11 @@ code. Backend: starting fresh, low-ops.
       real repo yet; UniformBasket wants GitHub Issues, not Linear).
 - [ ] Confirm the BYO-key path (`LITELLM_BASE_URL` / `LITELLM_API_KEY` /
       `LITELLM_MODEL` pointed at a client-owned endpoint) works end-to-end —
-      likely already works given `claudeClient.ts`'s design, needs testing
-      not new code.
+      the code path itself is reachable now (see "First live run" section
+      above — the pipeline gets all the way to the LLM call), but every
+      attempt so far has hit a config error before a real model response
+      came back. Still not actually confirmed: a real LLM call succeeding
+      and producing a posted PR comment.
 - [ ] Durable output storage — findings currently only land in
       `./reviews/**` on the CI runner, uploaded as a 30-day GitHub Actions
       artifact (`retention-days: 30` in the workflow). Needs a persistent
