@@ -35,7 +35,7 @@ jobs:
       - uses: AbhishikaAgarwal/myco-bundled-action@v1
         with:
           pr_link: ${{ github.event.pull_request.html_url }}
-          litellm_api_key: ${{ secrets.LLM_API_KEY }}
+          api_key: ${{ secrets.LLM_API_KEY }}
 ```
 
 This is the whole setup for a standard OpenAI-compatible key — it defaults to `gpt-4.1` against OpenAI's own endpoint.
@@ -53,14 +53,19 @@ Name it `LLM_API_KEY` and paste your key as the value. Nothing else to set for a
           litellm_model: your-model-name
 ```
 
-**Using a native Anthropic key instead?** Swap the key input for these:
+**Using a native Anthropic key instead?** Add one input — the key still goes under the same `api_key`:
 
 ```yaml
           llm_provider: anthropic
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 (A raw Gemini key doesn't need this — Gemini has its own OpenAI-compatible endpoint, so the default setup above already works with it via `litellm_base_url`.)
+
+**Tip**: if you might switch providers later, set `llm_provider` from a repo Variable instead of writing it
+inline — **Settings → Secrets and variables → Actions → Variables → New repository variable**, name it
+`LLM_PROVIDER`, value `openai` or `anthropic`. Then use `llm_provider: ${{ vars.LLM_PROVIDER }}` in the
+workflow above. Switching providers later is then a one-line change in Settings, and `api_key` never needs
+to move — no risk of the key ending up under the wrong provider's input.
 
 ## Step 4 — Open a pull request
 
