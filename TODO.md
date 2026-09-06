@@ -207,14 +207,29 @@ every fix below is live-tested against the real GitHub API, not mocked:
       against the real built artifact, not just ts-node: a key passed
       via `api_key` under `LLM_PROVIDER=anthropic` reached LLM-client
       construction with no manual routing and no guard false-positive.
+- [x] Rolling out `vars.LLM_PROVIDER` immediately broke every consumer:
+      `Unrecognized named-value: 'vars'` at action-resolution time,
+      before the action even ran. Root cause: the `api_key` input's own
+      *description* text in `action.yml` contained a literal
+      `${{ vars.LLM_PROVIDER }}` as a docs example — GitHub's action.yml
+      parser evaluates `${{ }}` anywhere in the file, not just
+      `run:`/`env:` blocks, and `vars` isn't a valid named-value inside
+      a composite action's own definition (only `inputs`/`github`/
+      `runner`/`env` are — `vars`/`secrets` belong to the *calling*
+      workflow only). Fixed: reworded the description in plain prose,
+      confirmed no other description contains `${{ }}` and every
+      remaining expression resolves to `inputs.*`/`github.*`. Commit
+      `053a389`. `vars.LLM_PROVIDER` is still fine to use in a
+      *consumer's* workflow file — the bug was only in our own
+      action.yml's description text.
 - [ ] The live run itself still hasn't completed successfully end to
       end — each retry has hit a new, different blocking error one stage
       further into the pipeline (tag → cross-account resolution → clone
-      auth → LLM auth/provider config). Next retry (workflow now just
-      needs `api_key` + optionally `llm_provider: anthropic`) is the
-      first one that could plausibly reach an actual review output;
-      whatever breaks next (posting comments, ticket creation) is still
-      unknown.
+      auth → LLM auth/provider config → action.yml failing to load at
+      all). Next retry (workflow now just needs `api_key` +
+      `llm_provider: ${{ vars.LLM_PROVIDER }}`) is the first one that
+      could plausibly reach an actual review output; whatever breaks
+      next (posting comments, ticket creation) is still unknown.
 
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 
