@@ -194,13 +194,27 @@ every fix below is live-tested against the real GitHub API, not mocked:
       working end-to-end on the user's actual machine** — both fixes
       are reasoned from the exact error text, not yet observed
       succeeding live.
+- [x] Grege pushed back on the fix (correctly): moving `llm_provider` to
+      a repo Variable only halves the problem, since the key still has
+      to be manually kept under the matching provider-specific input
+      (`litellm_api_key` vs `anthropic_api_key`) — flip the var without
+      also swapping that, same class of bug. Unified to a single
+      `api_key` input that `createLLMClient()` routes internally based
+      on `llm_provider`, so a provider switch (via `vars.LLM_PROVIDER`)
+      never needs an accompanying input swap. Legacy inputs still work
+      unchanged (take precedence if set explicitly). Commit `a28814d`
+      (Zenith) / `248d8b3` (bundled action, includes rebuild). Verified
+      against the real built artifact, not just ts-node: a key passed
+      via `api_key` under `LLM_PROVIDER=anthropic` reached LLM-client
+      construction with no manual routing and no guard false-positive.
 - [ ] The live run itself still hasn't completed successfully end to
       end — each retry has hit a new, different blocking error one stage
       further into the pipeline (tag → cross-account resolution → clone
-      auth → LLM auth). Next retry (after the client fixes their
-      workflow's `llm_provider`/`anthropic_api_key` config) is the first
-      one that could plausibly reach an actual review output; whatever
-      breaks next (posting comments, ticket creation) is still unknown.
+      auth → LLM auth/provider config). Next retry (workflow now just
+      needs `api_key` + optionally `llm_provider: anthropic`) is the
+      first one that could plausibly reach an actual review output;
+      whatever breaks next (posting comments, ticket creation) is still
+      unknown.
 
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 
