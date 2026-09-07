@@ -35,6 +35,20 @@ const FILE_TOOLS: Anthropic.Tool[] = [
 // some models/accounts support.
 const MAX_TOKENS = 8192;
 
+// A key that isn't scoped to a single workspace 400s on every request with
+// this exact message until anthropic-workspace-id is set (see the
+// ANTHROPIC_WORKSPACE_ID handling in the constructor below). Caught here and
+// rethrown with the actual fix instead of surfacing as a raw APIError deep
+// in the SDK's stack — hit live during real client testing, before
+// ANTHROPIC_WORKSPACE_ID support existed, as an unreadable stack trace.
+function isWorkspaceScopingError(err: any): boolean {
+  return (
+    err?.status === 400 &&
+    typeof err?.message === "string" &&
+    err.message.includes("not scoped to a workspace")
+  );
+}
+
 export class AnthropicClient implements LLMClient {
   private client: Anthropic;
   private modelName: string;
@@ -111,6 +125,14 @@ export class AnthropicClient implements LLMClient {
           break;
         } catch (err: any) {
           lastErr = err;
+          if (isWorkspaceScopingError(err)) {
+            throw new Error(
+              'Anthropic rejected this request: "This API key is not scoped to a workspace" — this key ' +
+              "needs a workspace specified on every request. Either set anthropic_workspace_id (find the " +
+              "workspace ID in the Anthropic Console), or regenerate the key with a specific workspace " +
+              "selected in the Console instead (no config needed then) — see README.md."
+            );
+          }
           if (attempt < MAX_API_RETRIES && isRetryable(err)) {
             const delayMs = RETRY_BASE_DELAY_MS * attempt;
             const code = err.code ?? err.cause?.code ?? err.message;
