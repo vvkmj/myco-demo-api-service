@@ -222,14 +222,71 @@ every fix below is live-tested against the real GitHub API, not mocked:
       `053a389`. `vars.LLM_PROVIDER` is still fine to use in a
       *consumer's* workflow file — the bug was only in our own
       action.yml's description text.
+- [x] After the `action.yml` fix above, `vars.LLM_PROVIDER` still kept
+      resolving to the `openai` default in `gregerodrigues/myco-test` —
+      three of my hypotheses (wrong tab, stale run, wrong repo) were each
+      individually ruled out by Grege. Root cause never got a hard
+      confirmation because the user hit "Re-run failed jobs" on the old
+      run, which replays that run's *already-checked-out* workflow YAML
+      rather than fetching the new push — critical GitHub Actions
+      gotcha, easy to miss. Once a genuinely new run (triggered by
+      `synchronize`, not a re-run) picked up the pushed workflow, the
+      provider/key routing resolved and the pipeline reached a real
+      Anthropic API call — the next error (below) confirms this.
+- [x] `BadRequestError: 400 ... "This API key is not scoped to a
+      workspace, so this request must include the anthropic-workspace-id
+      header..."` — first time the pipeline reached an actual LLM call.
+      Not a Myco bug — some Anthropic keys aren't scoped to a single
+      workspace. Immediate workaround given to Grege: regenerate the key
+      with a specific workspace selected in the Anthropic Console.
+      Shipped a proper fix too rather than leaving it as a manual
+      workaround: `AnthropicClient` now reads an optional
+      `ANTHROPIC_WORKSPACE_ID` env var and passes it as the
+      `anthropic-workspace-id` header via the SDK's `defaultHeaders`
+      option; added the matching `anthropic_workspace_id` input to
+      `action.yml` → `ANTHROPIC_WORKSPACE_ID`. (Checked first that the
+      SDK doesn't already do this for us: it does read an
+      `ANTHROPIC_WORKSPACE_ID` env var internally, but only as part of
+      its separate OAuth/config-file credential chain used when no
+      `apiKey` is passed — irrelevant here since we always pass
+      `apiKey` directly. No collision, and no free lunch either — the
+      explicit header is the actual fix.) 17/17 checks passing in
+      `test-anthropicClient.ts` (2 new: header set when
+      `ANTHROPIC_WORKSPACE_ID` is present, no header at all when it
+      isn't). Verified against the real rebuilt bundle: grep for both
+      the header string and env var name in `dist/index.js`, plus a
+      live `node -e` run with a fake `ANTHROPIC_WORKSPACE_ID` reaching
+      the diff-fetch stage exactly like the no-workspace-id path.
+      **Not yet confirmed against Grege's real 400** — he still needs to
+      either regenerate a workspace-scoped key (no config change needed)
+      or set `anthropic_workspace_id` and retry.
+- [x] Found while syncing this fix to `myco-bundled-action`: Abhishika
+      had made two commits directly in the bundled-action repo
+      (`8f2ae62`, `87c34cf`) bypassing the normal Zenith → rebuild →
+      publish flow. The first one (`8f2ae62`) reintroduced the *exact*
+      `vars.*`-in-`action.yml` bug fixed in commit `053a389` above — a
+      literal `${{ vars.LLM_PROVIDER || 'openai' }}` as the `llm_provider`
+      input's own `default:` and again in the composite step's `env:`
+      block, both of which would break action-loading again
+      (`Unrecognized named-value: 'vars'`) the next time a client's
+      workflow ran. The second commit (`87c34cf`, "minor fix") reverted
+      the `action.yml` part correctly, but left a `README.md` paragraph
+      from the first commit claiming the action "resolves this
+      automatically from the repo/org variable when the input is
+      omitted" — false, and actively misleading: the action has no way
+      to read a caller's repo Variables on its own, `vars.LLM_PROVIDER`
+      only works because the *calling* workflow evaluates it and passes
+      the result in as the `llm_provider` input. Rewrote that paragraph
+      to state the real mechanism plainly. **Worth a heads-up to
+      Abhishika**: hand-editing `action.yml`/`README.md` directly in the
+      bundled repo, instead of through Zenith + the publish flow, is
+      exactly how a fixed bug gets silently reintroduced — happened
+      here within about 24 hours of the original fix.
 - [ ] The live run itself still hasn't completed successfully end to
-      end — each retry has hit a new, different blocking error one stage
-      further into the pipeline (tag → cross-account resolution → clone
-      auth → LLM auth/provider config → action.yml failing to load at
-      all). Next retry (workflow now just needs `api_key` +
-      `llm_provider: ${{ vars.LLM_PROVIDER }}`) is the first one that
-      could plausibly reach an actual review output; whatever breaks
-      next (posting comments, ticket creation) is still unknown.
+      end, but has now gotten further than ever before — past LLM
+      client construction and into a real Anthropic API call. Whatever
+      breaks next (the actual review, posting comments, ticket
+      creation) is still unknown.
 
 ## Phase 0 — Security / correctness fixes (blocking any real run)
 

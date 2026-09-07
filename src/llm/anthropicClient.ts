@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as fs from "fs";
 import { LLMClient, executeTool, isRetryable, MAX_API_RETRIES, RETRY_BASE_DELAY_MS } from "./claudeClient";
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 // Native Anthropic Messages API client — for clients who bring a raw
 // Anthropic key rather than an OpenAI-compatible one (LiteLLMClient only
 // speaks the OpenAI chat-completions shape; Anthropic's API is not
@@ -12,7 +12,7 @@ import { LLMClient, executeTool, isRetryable, MAX_API_RETRIES, RETRY_BASE_DELAY_
 // Implements the same LLMClient interface and reuses the exact same
 // executeTool()/path-safety logic and retry policy as claudeClient.ts, so
 // the two providers can never silently diverge on either.
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 
 const FILE_TOOLS: Anthropic.Tool[] = [
   {
@@ -59,6 +59,14 @@ export class AnthropicClient implements LLMClient {
       );
     }
     this.modelName = modelOverride || process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+    // Some Anthropic API keys are not scoped to a single workspace, in which
+    // case every request 400s with "This API key is not scoped to a
+    // workspace... Add the header, or use an API key that is scoped to a
+    // workspace." rather than any content-related error. Rather than forcing
+    // every client to go regenerate a workspace-scoped key, accept an
+    // optional workspace id and send it as the header the API asks for —
+    // hit live during real client testing.
+    const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID;
     this.client = new Anthropic({
       apiKey,
       // Optional override for enterprise/custom endpoints (e.g. a Bedrock
@@ -67,6 +75,7 @@ export class AnthropicClient implements LLMClient {
       baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
       timeout: 600_000,
       maxRetries: 2,
+      defaultHeaders: workspaceId ? { "anthropic-workspace-id": workspaceId } : undefined,
     });
   }
 
