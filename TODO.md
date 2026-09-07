@@ -282,6 +282,28 @@ every fix below is live-tested against the real GitHub API, not mocked:
       bundled repo, instead of through Zenith + the publish flow, is
       exactly how a fixed bug gets silently reintroduced — happened
       here within about 24 hours of the original fix.
+- [x] Grege asked what happens for a client with a raw Anthropic key
+      who doesn't set (or care about) a workspace id at all — answer:
+      nothing changes for them, anthropic_workspace_id is fully
+      optional and only matters for the minority with unscoped keys.
+      But that surfaced a real gap: a client with an unscoped key who
+      *doesn't* set it hit the exact raw BadRequestError stack trace
+      from live testing, not a clean actionable message like every
+      other config error in this codebase gets. Fixed: AnthropicClient
+      now recognizes this specific 400 (status 400 + message contains
+      "not scoped to a workspace") and rethrows immediately — no retry
+      wasted on a permanent config error — with a one-line message
+      pointing at anthropic_workspace_id or regenerating a scoped key.
+      18/18 checks passing in test-anthropicClient.ts (1 new). Verified
+      against the rebuilt bundle: grepped for the new message text,
+      confirmed the no-ANTHROPIC_WORKSPACE_ID path still behaves
+      identically to before. **Also caught a real device-transfer bug
+      while shipping this**: device_commit_files twice reported a
+      successful write of the rebuilt bundle while silently leaving
+      the *previous* bundle in place — only caught because the process
+      is to re-verify committed content (md5sum + grep for the new
+      code) rather than trust the "written" confirmation. Worth
+      remembering as a standing gotcha for any future bundle publish.
 - [ ] The live run itself still hasn't completed successfully end to
       end, but has now gotten further than ever before — past LLM
       client construction and into a real Anthropic API call. Whatever
