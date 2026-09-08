@@ -101,10 +101,22 @@ export async function reportMetrics(
   findings: ValidatedFinding[]
 ): Promise<void> {
   const endpoint = process.env.METRICS_ENDPOINT;
-  if (!endpoint) return;
+  // Always log the on/off decision, even when off. Without this, "opted out"
+  // and "the input never reached this process" (wrong secret name, missing
+  // `with:` line, workflow not yet updated) print identically — nothing —
+  // which is exactly what made a real "no rows showing up" report
+  // undebuggable from the Action log alone. Same reasoning as the
+  // ANTHROPIC_WORKSPACE_ID diagnostic in anthropicClient.ts.
+  if (!endpoint) {
+    console.log("  ℹ️   METRICS_ENDPOINT is not set — metrics reporting skipped.");
+    return;
+  }
 
   const payload = buildMetricsPayload(diff, prUrl, findings);
   const apiKey = process.env.METRICS_API_KEY;
+  console.log(
+    `  ℹ️   METRICS_ENDPOINT is set (${endpoint}) — reporting metrics for ${payload.client_id}${apiKey ? "" : " (no METRICS_API_KEY set — sending without auth)"}.`
+  );
 
   try {
     await axios.post(endpoint, payload, {
@@ -118,6 +130,16 @@ export async function reportMetrics(
       `  📊  Metrics reported (${payload.summary.total} finding(s), ${payload.summary.confirmed} confirmed) for ${payload.client_id}.`
     );
   } catch (err: any) {
-    console.warn(`  ⚠️   Metrics reporting failed (non-fatal): ${err.message}`);
+    // Surface the actual HTTP status + response body when we have one (e.g.
+    // Supabase's gateway-level "Missing authorization header" from JWT
+    // enforcement being re-enabled reads very differently from the ingest
+    // function's own "invalid token" — both otherwise collapse into the
+    // same generic axios "Request failed with status code 401" message).
+    const status = err?.response?.status;
+    const body = err?.response?.data;
+    const detail = status
+      ? ` [HTTP ${status}]${body ? ` ${typeof body === "string" ? body : JSON.stringify(body)}` : ""}`
+      : "";
+    console.warn(`  ⚠️   Metrics reporting failed (non-fatal): ${err.message}${detail}`);
   }
 }
