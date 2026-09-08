@@ -129,6 +129,35 @@ code. Backend: starting fresh, low-ops.
       `https://liuxmyrceaurpsjiatfk.supabase.co/functions/v1/ingest-metrics`
       — this is what goes into a client's `METRICS_ENDPOINT` secret,
       paired with `METRICS_API_KEY` = the `METRICS_INGEST_KEY` value.
+- [x] Wired into the live workflow for `gregerodrigues/myco-test`
+      (`metrics_endpoint`/`metrics_api_key` added to the `with:` block,
+      `METRICS_API_KEY` secret set to the `METRICS_INGEST_KEY` value).
+      **Live gap found (2026-09-08)**: Grege reported PR comments posting
+      correctly but no new rows in `pr_review_metrics`. `reportMetrics()`
+      was a silent no-op in both the "opted out" case (`METRICS_ENDPOINT`
+      unset) and any case where the request failed after being sent —
+      identical to the ANTHROPIC_WORKSPACE_ID bug shape from earlier this
+      week. Fixed in `src/output/metricsReporter.ts`: always logs the
+      on/off decision, and on failure logs the actual HTTP status + response
+      body (not just axios's generic message) — specifically so a
+      re-regression of the "Enforce JWT Verification" Supabase setting (see
+      the two deploy snags above — this is exactly the kind of thing that
+      can silently flip back on after redeploying the function) shows up
+      as a distinct, readable line instead of collapsing into the same
+      silence as "not configured." Rebuilt into `myco-bundled-action`
+      (commit `80b5729`, not yet tagged `v1` — needs `git push` +
+      `.\publish.cmd`/`.ps1` from Grege's own terminal, same as every
+      prior bundle update, since this sandboxed shell has no GitHub
+      credentials). **Still unresolved**: root cause of the missing rows
+      itself — needs the next Action run's log (does it now say "metrics
+      reporting skipped", "reporting metrics for ...", or a
+      "[HTTP nnn]" failure?) to actually localize it. Prime suspects, in
+      order: (1) the run predates the workflow edit adding
+      `metrics_endpoint`/`metrics_api_key` (re-running a job replays the
+      OLD workflow YAML — needs a fresh push/synchronize, not a re-run);
+      (2) `METRICS_API_KEY` secret was never actually added to
+      `myco-test`; (3) Supabase's "Enforce JWT Verification" got
+      re-enabled on the function.
 - [ ] A small per-client + aggregate dashboard/view once the backend exists
       (even a simple query script or a lightweight page) — not yet built,
       blocked on the backend decision above.
