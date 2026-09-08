@@ -304,6 +304,40 @@ every fix below is live-tested against the real GitHub API, not mocked:
       is to re-verify committed content (md5sum + grep for the new
       code) rather than trust the "written" confirmation. Worth
       remembering as a standing gotcha for any future bundle publish.
+- [x] Grege regenerated a workspace-scoped key AND added the
+      workspace-id secret, and still hit the exact same "not scoped to
+      a workspace" 400 — meaning the previous fix's own actionable
+      error message was correct but the underlying cause wasn't fully
+      addressed. Two changes: (1) both ANTHROPIC_API_KEY and
+      ANTHROPIC_WORKSPACE_ID are now `.trim()`'d before use — a value
+      pasted into a GitHub secret can carry an invisible trailing
+      newline/space with zero visible difference in the Settings UI,
+      which would silently corrupt the header value and reproduce this
+      exact error even with a genuinely-provided workspace id; (2)
+      added a one-line, non-secret diagnostic log stating whether
+      ANTHROPIC_WORKSPACE_ID was received at all plus its length and a
+      truncated prefix, so the next failure can be diagnosed from the
+      Action log alone — distinguishing "never reached this process"
+      (wrong secret name, or not wired into the caller's `with:` block
+      — both fail silently) from "arrived but still rejected" (wrong
+      value, e.g. an org ID instead of a workspace ID) without needing
+      Grege to paste anything sensitive. 20/20 checks passing (2 new:
+      trailing whitespace is trimmed off both the key and the
+      workspace id). **Real lesson from this one**: I shipped the
+      workspace-id feature and its friendly-error rewrite without ever
+      considering that the secret's own transport could be lossy —
+      should have trimmed untrusted string inputs from the start, the
+      same way `LLM_PROVIDER` already was.
+      **Also**: caught and fixed a corrupted line introduced by my own
+      base64 transfer to the device in this same session (a stray
+      fragment inside the tool-result loop that would have broken the
+      TypeScript build) — caught via a chunked md5sum diff against the
+      cloud source rather than trusting the transfer succeeded, after
+      the `device_commit_files` staleness bug earlier in this session
+      already showed "reported success" isn't proof of correct
+      content. Both the corruption and the stale-bundle issue point at
+      the same standing risk: verify content after any cloud-to-device
+      transfer, every time, not just when something looks off.
 - [ ] The live run itself still hasn't completed successfully end to
       end, but has now gotten further than ever before — past LLM
       client construction and into a real Anthropic API call. Whatever

@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as fs from "fs";
 import { LLMClient, executeTool, isRetryable, MAX_API_RETRIES, RETRY_BASE_DELAY_MS } from "./claudeClient";
 
-// ────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // Native Anthropic Messages API client — for clients who bring a raw
 // Anthropic key rather than an OpenAI-compatible one (LiteLLMClient only
 // speaks the OpenAI chat-completions shape; Anthropic's API is not
@@ -12,7 +12,7 @@ import { LLMClient, executeTool, isRetryable, MAX_API_RETRIES, RETRY_BASE_DELAY_
 // Implements the same LLMClient interface and reuses the exact same
 // executeTool()/path-safety logic and retry policy as claudeClient.ts, so
 // the two providers can never silently diverge on either.
-// ────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 const FILE_TOOLS: Anthropic.Tool[] = [
   {
@@ -60,7 +60,11 @@ export class AnthropicClient implements LLMClient {
    *                       silently change which model gets used).
    */
   constructor(modelOverride?: string) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    // .trim(): a value pasted into a GitHub secret can carry an invisible
+    // trailing newline/space (common when copy-pasting from a console UI),
+    // which would otherwise silently produce a wrong key/header value with
+    // no visible difference in the Settings UI.
+    const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
     if (!apiKey) throw new Error("Missing env var: ANTHROPIC_API_KEY");
     // Mirror the check in claudeClient.ts for the opposite mismatch: an
     // OpenAI-shaped key passed here would otherwise fail as an opaque 401
@@ -80,7 +84,20 @@ export class AnthropicClient implements LLMClient {
     // every client to go regenerate a workspace-scoped key, accept an
     // optional workspace id and send it as the header the API asks for —
     // hit live during real client testing.
-    const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID;
+    const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID?.trim() || undefined;
+    // Non-secret diagnostic: workspace IDs aren't sensitive the way API keys
+    // are, but truncate anyway. This is here specifically to distinguish,
+    // from the Action log alone, "the input never reached this process"
+    // (wrong secret name, input not wired into the caller's `with:` block —
+    // both fail silent/empty, no error) from "it arrived but Anthropic still
+    // rejects it" (wrong value — e.g. an org ID instead of a workspace ID) —
+    // hit live where the actionable error message alone wasn't enough to
+    // tell which of those two was actually happening.
+    console.log(
+      workspaceId
+        ? `  ℹ️   ANTHROPIC_WORKSPACE_ID is set (length ${workspaceId.length}, starts "${workspaceId.slice(0, 6)}…") — sending anthropic-workspace-id header.`
+        : "  ℹ️   ANTHROPIC_WORKSPACE_ID is not set — no anthropic-workspace-id header will be sent."
+    );
     this.client = new Anthropic({
       apiKey,
       // Optional override for enterprise/custom endpoints (e.g. a Bedrock
