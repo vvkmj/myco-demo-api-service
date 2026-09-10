@@ -1,4 +1,4 @@
-# ZENITH - PR Reviewer Agent
+# Myco Intelligence
 
 An automated **PR review agent** that acts as a senior SDET. Given a GitHub PR URL, it:
 1. Fetches the PR diff and metadata from the GitHub API
