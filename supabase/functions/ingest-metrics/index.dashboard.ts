@@ -2,7 +2,7 @@
 // Edge Functions editor (Create function -> paste this whole file -> Deploy).
 // This is a mechanical concatenation of handler.ts + index.ts from this same
 // folder — handler.ts is the tested source of truth (see
-// test-ingestMetricsHandler.ts in the Zenith repo); if you change the logic,
+// test-ingestMetricsHandler.ts in the Myco-backend repo); if you change the logic,
 // change it there and regenerate this file, don't hand-edit both.
 
 // Pure, framework-agnostic logic for the ingest-metrics edge function —
@@ -148,7 +148,7 @@ export function toRow(payload: MetricsPayload): MetricsRow {
 // This is a deliberately thin wrapper around handler.ts — every decision
 // (auth check, payload validation, row shaping) lives there and is unit
 // tested with plain Node/ts-node (see test-ingestMetricsHandler.ts in the
-// Zenith repo). This file only does Deno-specific plumbing: reading the
+// Myco-backend repo). This file only does Deno-specific plumbing: reading the
 // request, calling the DB, shaping the HTTP response.
 //
 // Why an edge function instead of pointing METRICS_ENDPOINT straight at

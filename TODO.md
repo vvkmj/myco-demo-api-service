@@ -28,7 +28,7 @@ secret) purely so confirmed-bug counts are queryable for metrics later.
 
 - [x] `GitHubIssuesTicketCreator` added (`src/tickets/ticketCreator.ts`) —
       files a GitHub Issue per confirmed finding in the same repo being
-      reviewed, labeled `zenith-confirmed-bug` + severity, using the
+      reviewed, labeled `myco-confirmed-bug` + severity, using the
       already-available `GITHUB_TOKEN` (no new secret). Factory and
       `TICKET_PROVIDER` type extended to `"github-issues"`.
 - [x] New `CREATE_TICKETS_FOR` env var (`merge-blocking` default |
@@ -192,7 +192,7 @@ every fix below is live-tested against the real GitHub API, not mocked:
       `src/repo/repoManager.ts` (`withAuth()` / `redactForLog()`,
       scoped to `github.com` https URLs only so a live token can never
       leak to an arbitrary `TARGET_REPO` host) — commit `8aaeaae`
-      (Zenith) / `6dfc560` (bundled action). Verified with real
+      (source backend) / `6dfc560` (bundled action). Verified with real
       (non-mocked) `git clone` calls, not just unit tests.
 - [x] `AuthenticationError: 401 Incorrect API key provided` — an
       Anthropic key (`sk-ant-...`) was passed as `litellm_api_key` with
@@ -202,7 +202,7 @@ every fix below is live-tested against the real GitHub API, not mocked:
       error was bad enough to fix: both `LiteLLMClient` and
       `AnthropicClient` now check key shape at construction and throw
       an actionable error naming the exact input to change, before any
-      network call. Commit `16df771` (Zenith) / `e3ba33f` (bundled
+      network call. Commit `16df771` (source backend) / `e3ba33f` (bundled
       action, includes the rebuilt bundle).
 - [x] `publish.ps1` "didn't work" — two separate bugs, found one at a
       time because the second was hidden behind the first. (1) The
@@ -232,7 +232,7 @@ every fix below is live-tested against the real GitHub API, not mocked:
       on `llm_provider`, so a provider switch (via `vars.LLM_PROVIDER`)
       never needs an accompanying input swap. Legacy inputs still work
       unchanged (take precedence if set explicitly). Commit `a28814d`
-      (Zenith) / `248d8b3` (bundled action, includes rebuild). Verified
+      (source backend) / `248d8b3` (bundled action, includes rebuild). Verified
       against the real built artifact, not just ts-node: a key passed
       via `api_key` under `LLM_PROVIDER=anthropic` reached LLM-client
       construction with no manual routing and no guard false-positive.
@@ -291,7 +291,7 @@ every fix below is live-tested against the real GitHub API, not mocked:
       or set `anthropic_workspace_id` and retry.
 - [x] Found while syncing this fix to `myco-bundled-action`: Abhishika
       had made two commits directly in the bundled-action repo
-      (`8f2ae62`, `87c34cf`) bypassing the normal Zenith → rebuild →
+      (`8f2ae62`, `87c34cf`) bypassing the normal Myco-backend → rebuild →
       publish flow. The first one (`8f2ae62`) reintroduced the *exact*
       `vars.*`-in-`action.yml` bug fixed in commit `053a389` above — a
       literal `${{ vars.LLM_PROVIDER || 'openai' }}` as the `llm_provider`
@@ -308,7 +308,7 @@ every fix below is live-tested against the real GitHub API, not mocked:
       the result in as the `llm_provider` input. Rewrote that paragraph
       to state the real mechanism plainly. **Worth a heads-up to
       Abhishika**: hand-editing `action.yml`/`README.md` directly in the
-      bundled repo, instead of through Zenith + the publish flow, is
+      bundled repo, instead of through Myco-backend + the publish flow, is
       exactly how a fixed bug gets silently reintroduced — happened
       here within about 24 hours of the original fix.
 - [x] Grege asked what happens for a client with a raw Anthropic key
@@ -384,15 +384,11 @@ every fix below is live-tested against the real GitHub API, not mocked:
       sibling directory whose name has the repo root as a string prefix
       (e.g. `target-repo` vs. `target-repo-secrets`). Fixed: now requires an
       exact match or a path-separator boundary.
-- [x] Hardcoded `owner: motorq` / `repository: motorq/zenith` in
-      `.github/workflows/zenith.yml` — the consumer workflow always pulled
-      this product's own private source into whichever repo installed it.
-      Partial fix: parametrized via `vars.ZENITH_APP_OWNER` /
-      `vars.ZENITH_SOURCE_REPO` / `vars.ZENITH_SOURCE_REF` so onboarding a
-      new repo is a config change, not a YAML edit. Real fix is still
-      Phase 1's action.yml packaging (see below) — this workflow still
-      checks out source rather than referencing a published action.
-- [x] `target-repo/` (a stale sparse-checkout of `motorq/fleet-streams`,
+- [x] Removed the legacy source-checkout/GitHub-App consumer workflow. It
+      required external App credentials and could keep an obsolete App owner
+      involved in client runs. Client repositories now use the published
+      Myco composite action and their automatic `GITHUB_TOKEN` instead.
+- [x] `target-repo/` (a stale sparse-checkout of an unrelated repository,
       unrelated to this product) was tracked in git despite the README
       describing it as ephemeral/git-ignored-in-practice. It got wiped from
       disk mid-session (likely by an interrupted `npm install` — root cause
@@ -407,23 +403,20 @@ every fix below is live-tested against the real GitHub API, not mocked:
       committed versions must be treated as compromised and rotated —
       untracking does not remove them from git history.
 - [x] **Found while auditing for "integrate right away" readiness**:
-      the still-unfinalized "Zenith" codename was leaking into
-      client-visible output — a hardcoded `zenith-confirmed-bug` GitHub
-      Issues label, and `["Zenith", "pr-reviewer-agent", ...]` Jira labels.
+      an internal codename was leaking into client-visible output through
+      GitHub Issues and Jira labels.
       A client (Velo, UniformBasket) using either ticket provider would
       have seen the internal codename directly in their own issue tracker.
       Fixed: both now derive from one `PRODUCT_LABEL` env var (default
       neutral `"ai-code-review"`, no product name baked in) — wired through
-      `myco-bundled-action`'s `action.yml` as `product_label` and
-      `zenith.yml`'s `ZENITH_PRODUCT_LABEL` var. 8/8 new checks
+      `myco-bundled-action`'s `action.yml` as `product_label`. 8/8 new checks
       (`test-jiraTicketCreator.ts`) plus the existing GitHub Issues test
-      updated. Checked every other "Zenith" occurrence in the codebase —
-      the rest are code comments and the console banner ("PR Reviewer
-      Agent" — generic, not the codename), nothing else client-visible.
+      updated. Checked every other client-visible string and removed the
+      legacy codename.
       **Resolved**: product name finalized — **Myco**. `PRODUCT_LABEL`
       default updated to `"myco"` everywhere (`ticketCreator.ts`,
-      `action.yml`, `myco-bundled-action`'s README, `ONBOARDING.md`,
-      `zenith.yml` comment), console banner now says "Myco PR Reviewer",
+      `action.yml`, `myco-bundled-action`'s README, and `ONBOARDING.md`),
+      console banner now says "Myco PR Reviewer",
       `package.json` name is `myco-pr-reviewer`. Verified via cloud mirror
       before committing: clean typecheck, both ticket-creator test suites
       updated and passing (26 checks). Also rebuilt the bundle with
@@ -433,7 +426,7 @@ every fix below is live-tested against the real GitHub API, not mocked:
       mangles names, not string content — confirmed directly: grepped the
       review system prompt text out of the minified `dist/index.js`).
       **Still open (cosmetic, not blocking)**: repo rename from
-      `pr-reviewer-agent`/`zenith` (this private source repo — clients never
+      legacy private source-repository naming (clients never
       see it, so genuinely low priority), an App listing name if/when the
       GitHub App is built.
       None of these block integrating with a client today.

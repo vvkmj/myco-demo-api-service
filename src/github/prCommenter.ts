@@ -9,10 +9,10 @@ import { ValidatedFinding } from "../validate/findingValidator";
 
 /**
  * Snapshot of findings that have already been raised in the PR from a previous
- * Zenith run. Used to suppress duplicate inline comments and ticket creation.
+ * Myco run. Used to suppress duplicate inline comments and ticket creation.
  */
 export interface AlreadyRaisedResult {
-  /** file:line positions where a non-bot dev has replied to a Zenith comment. */
+  /** file:line positions where a non-bot dev has replied to a Myco comment. */
   acknowledgedPositions: Set<string>;
   /** file:line → ticketUrl for inline threads whose bot comment already contains a ticket link. */
   ticketedByPosition: Map<string, string>;
@@ -237,7 +237,7 @@ export async function postConfirmedInlineComments(
   const prRes = await axios.get(`${base}/pulls/${diff.prNumber}`, { headers });
   const headSha: string = prRes.data.head.sha;
 
-  // Skip findings whose file+line already has a Zenith comment with a developer reply.
+  // Skip findings whose file+line already has a Myco comment with a developer reply.
   // Use acknowledgedPositions from alreadyRaised if available (avoids a second API call),
   // otherwise fall back to fetching them now.
   const acknowledged = alreadyRaised?.acknowledgedPositions ?? await fetchAcknowledgedPositions(diff, token);
@@ -409,11 +409,11 @@ async function paginateComments(
 
 /**
  * Scan all existing PR comments (inline review threads + issue comments) to
- * detect findings that were already raised in a previous Zenith run.
+ * detect findings that were already raised in a previous Myco run.
  *
  * Two detection sources:
  *  1. "## Jira Tickets Filed" issue comments — parse finding IDs + ticket URLs.
- *  2. Inline Zenith bot comment threads — check the bot comment for a
+ *  2. Inline Myco bot comment threads — check the bot comment for a
  *     "[Jira ticket](url)" link, and fall back to scanning reply text for
  *     known ticket URL patterns (Jira / Linear / GitHub issues).
  *
@@ -493,7 +493,7 @@ export async function fetchAlreadyRaisedFindings(
     const root = byId.get(rootId);
     if (!root || !root.path || root.line == null) continue;
 
-    // Only process threads started by a Zenith bot comment.
+    // Only process threads started by a Myco bot comment.
     if (root.user?.type !== "Bot" || !root.body?.includes("**[")) continue;
 
     const position = `${root.path}:${root.line}`;
@@ -525,12 +525,12 @@ export async function fetchAlreadyRaisedFindings(
 }
 
 /**
- * Fetch file+line positions of existing bot (Zenith) inline review comments
+ * Fetch file+line positions of existing bot (Myco) inline review comments
  * that have received at least one reply from a non-bot developer.
  *
  * Returns a Set of "filePath:line" strings. Findings whose position appears
  * in this set have already been acknowledged by a developer and should not
- * be re-commented on subsequent Zenith runs.
+ * be re-commented on subsequent Myco runs.
  */
 async function fetchAcknowledgedPositions(
   diff: DiffContext,
@@ -588,7 +588,7 @@ async function fetchAcknowledgedPositions(
   for (const c of allComments) {
     if (c.in_reply_to_id) continue;                       // only thread roots
     if (c.user?.type !== "Bot") continue;                 // only bot comments
-    if (!c.body?.includes("**[")) continue;               // only Zenith-format comments
+    if (!c.body?.includes("**[")) continue;               // only Myco-format comments
     if (!c.path || c.line == null) continue;              // must have a file+line position
 
     const repliers = replyUserTypes.get(c.id) ?? [];

@@ -32,7 +32,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: AbhishikaAgarwal/myco-bundled-action@v1
+      - uses: MycoIntelligence/myco-bundled-action@v1
         with:
           pr_link: ${{ github.event.pull_request.html_url }}
           api_key: ${{ secrets.LLM_API_KEY }}

@@ -6,7 +6,7 @@
 -- sends — finding id/severity/title/verdict/mergeBlocking and aggregate
 -- counts. It never receives file paths, root cause/impact/fix text,
 -- validator reasoning, or source code. See src/output/metricsReporter.ts
--- in the Zenith repo for the enforced boundary on the sending side.
+-- in the Myco-backend repo for the enforced boundary on the sending side.
 
 create table if not exists public.pr_review_metrics (
   id uuid primary key default gen_random_uuid(),

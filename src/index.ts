@@ -277,7 +277,7 @@ async function main() {
       // ── 9c. Fetch already-raised findings from PR comments ────────────────
       // Reads existing inline review threads and "Jira Tickets Filed" issue
       // comments to detect bugs that were already commented on and ticketed in
-      // a previous Zenith run. Used to suppress duplicate inline comments and
+      // a previous Myco run. Used to suppress duplicate inline comments and
       // duplicate ticket creation below.
       let alreadyRaised: AlreadyRaisedResult | undefined;
       if (diff.sourceType === "pr") {

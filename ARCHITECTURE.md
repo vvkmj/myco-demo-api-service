@@ -1,6 +1,6 @@
-# Zenith — Technical Architecture
+# Myco — Technical Architecture
 
-Zenith is an automated SDET (Software Development Engineer in Test) review agent. It runs as a GitHub Actions CI job on every PR, analyses the diff using LLMs, validates findings with a second-pass model, posts inline PR comments, and optionally files Jira tickets. It blocks merges on confirmed P1/BLOCKER bugs.
+Myco is an automated SDET (Software Development Engineer in Test) review agent. It runs as a GitHub Actions CI job on every PR, analyses the diff using LLMs, validates findings with a second-pass model, posts inline PR comments, and optionally files Jira tickets. It blocks merges on confirmed P1/BLOCKER bugs.
 
 ---
 
@@ -14,7 +14,7 @@ Zenith is an automated SDET (Software Development Engineer in Test) review agent
 | Validator model | `quality/Kimi-K2.6` (configurable via `VALIDATOR_MODEL`) |
 | GitHub API | `axios` — REST calls to `api.github.com` |
 | Jira API | `axios` — Jira Cloud REST v3 |
-| CI | GitHub Actions (`zenith.yml` — installed in consumer repos to get Zenith review on their PRs) |
+| CI | GitHub Actions (`MycoIntelligence/myco-bundled-action@v1` — installed in consumer repos to review their PRs) |
 
 No LangChain, LangFuse, or any agent framework is used. All orchestration is hand-rolled.
 
@@ -135,7 +135,7 @@ The validator can also issue `read_file` tool calls. After the response, verdict
 The use of a **different model** for validation is intentional — it acts as an independent second opinion to reduce false positives from the review model.
 
 ### Step 10 — Check for already-raised findings
-`src/github/prCommenter.ts` (`fetchAlreadyRaisedFindings`) — before posting comments or creating tickets, Zenith reads existing PR inline review threads and issue comments to detect findings already raised in a previous run. Two mechanisms:
+`src/github/prCommenter.ts` (`fetchAlreadyRaisedFindings`) — before posting comments or creating tickets, Myco reads existing PR inline review threads and issue comments to detect findings already raised in a previous run. Two mechanisms:
 
 1. **"Jira Tickets Filed" issue comment** — parses `[findingId] → ticketUrl` from a previously-posted summary comment
 2. **Inline bot comment threads** — checks if the bot comment already contains a `[Jira ticket](url)` link, or if a developer has replied to the thread (acknowledged)
@@ -208,14 +208,14 @@ The review model generates a broad list of potential bugs. The validator acts as
 Large repos can be 10GB+. Sparse-checking out only the folders touched by the PR keeps clone time to seconds and keeps the tool-call file reads scoped to relevant code.
 
 **Why hash-based ticket deduplication?**
-If a PR is updated and Zenith re-runs, the same bugs would generate duplicate Jira tickets. The hash (`sha256(filePath|severity|rootCause[:100])`) is stable across re-runs for the same bug and is stored in `ticket-hashes.json`.
+If a PR is updated and Myco re-runs, the same bugs would generate duplicate Jira tickets. The hash (`sha256(filePath|severity|rootCause[:100])`) is stable across re-runs for the same bug and is stored in `ticket-hashes.json`.
 
 ---
 
 ## GitHub Actions Integration
 
-### `zenith.yml` — Consumer workflow
-The workflow that external repos install to get Zenith review on their PRs. Checks out the Zenith repo itself (from `motorq/zenith@main`) and runs `npm run review` against the consumer's PR. Triggers on `pull_request` (opened/reopened) and on the `trigger-zenith` label (for manual re-runs). The label is removed after each run.
+### Bundled GitHub Action — Consumer workflow
+External repositories install `MycoIntelligence/myco-bundled-action@v1` in their own workflow. The action uses the consumer workflow's automatic `GITHUB_TOKEN` for same-repository GitHub API access; it does not use a GitHub App, GitHub App private key, or legacy third-party credentials.
 
 ---
 

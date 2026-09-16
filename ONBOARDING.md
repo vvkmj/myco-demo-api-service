@@ -8,8 +8,8 @@ this product's private code.
 ## 0. Before the client touches anything
 
 - [ ] Invite the client's GitHub account/org as a **collaborator** on
-      `AbhishikaAgarwal/myco-bundled-action` (it's private — their CI can't
-      resolve `uses: AbhishikaAgarwal/myco-bundled-action@v1` without this).
+      `MycoIntelligence/myco-bundled-action` (the public bundled action
+      clients reference directly from their workflow).
 - [ ] Product name is finalized: **Myco**. Tickets get a `myco` /
       `myco-confirmed-bug` label by default — override per-client via
       `product_label` only if they want their own label scheme instead.
@@ -59,7 +59,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: AbhishikaAgarwal/myco-bundled-action@v1
+      - uses: MycoIntelligence/myco-bundled-action@v1
         with:
           pr_link: ${{ github.event.pull_request.html_url }}
           litellm_api_key: ${{ secrets.LLM_API_KEY }}
@@ -88,7 +88,7 @@ permissions:
   issues: write
 
     steps:
-      - uses: AbhishikaAgarwal/myco-bundled-action@v1
+      - uses: MycoIntelligence/myco-bundled-action@v1
         with:
           pr_link: ${{ github.event.pull_request.html_url }}
           litellm_api_key: ${{ secrets.LLM_API_KEY }}

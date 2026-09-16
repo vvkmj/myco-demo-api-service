@@ -1,7 +1,7 @@
 # Cross-client metrics backend (Supabase)
 
 Backend for `METRICS_ENDPOINT`/`METRICS_API_KEY` (see `src/output/metricsReporter.ts`
-in the Zenith repo). Receives a privacy-minimized summary (counts + finding
+in the Myco-backend repo). Receives a privacy-minimized summary (counts + finding
 id/severity/title/verdict/mergeBlocking — never file paths, root cause, fix
 text, or code) after each reviewer run and stores it for per-client and
 aggregate-across-clients rollups.
@@ -115,7 +115,7 @@ order by received_at desc;
 
 `handler.ts` (auth check, payload validation, DB row shaping) has zero
 Deno-specific imports on purpose, so it's unit tested with plain Node —
-see `test-ingestMetricsHandler.ts` at the Zenith repo root (26/26 checks:
+see `test-ingestMetricsHandler.ts` at the Myco-backend repo root (26/26 checks:
 auth rejection/acceptance, every payload-validation edge case, and correct
 row mapping). `index.ts`/`index.dashboard.ts` are a thin wrapper around it —
 the only untested part is Deno-specific plumbing (reading the request,

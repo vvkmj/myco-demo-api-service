@@ -5,7 +5,7 @@
 // This is a deliberately thin wrapper around handler.ts — every decision
 // (auth check, payload validation, row shaping) lives there and is unit
 // tested with plain Node/ts-node (see test-ingestMetricsHandler.ts in the
-// Zenith repo). This file only does Deno-specific plumbing: reading the
+// Myco-backend repo). This file only does Deno-specific plumbing: reading the
 // request, calling the DB, shaping the HTTP response.
 //
 // Why an edge function instead of pointing METRICS_ENDPOINT straight at

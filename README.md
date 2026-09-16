@@ -18,13 +18,13 @@ Add the required env vars
 `PR_LINK` accepts **either** a PR URL or a GitHub compare URL:
 ```
 # Pull request
-PR_LINK=https://github.com/motorq/fleet-streams/pull/123
+PR_LINK=https://github.com/owner/repository/pull/123
 
 # Tag diff
-PR_LINK=https://github.com/motorq/fleet-streams/compare/v1.2.3...v1.2.4
+PR_LINK=https://github.com/owner/repository/compare/v1.2.3...v1.2.4
 
 # Branch compare
-PR_LINK=https://github.com/motorq/fleet-streams/compare/main...feature/my-branch
+PR_LINK=https://github.com/owner/repository/compare/main...feature/my-branch
 ```
 
 ---
@@ -57,7 +57,7 @@ src/
 
 **Other files:**
 - `.env` / `.env.example` — all runtime config (see Environment Variables below)
-- `results/` — previously generated reviews (e.g. `motorq_fleet-streams_pr13889/`)
+- `results/` — previously generated reviews (e.g. `owner_repository_pr123/`)
 - `fleet-streams/` — sparse-checked-out clone of the target repo (git-ignored in practice)
 - `tsconfig.json` — ES2020, CommonJS, strict mode
 
@@ -302,11 +302,10 @@ Reviews are written to: `./reviews/<owner>_<repo>_<slug>/<slug>_review.md`
 
 | Input type | Example slug | Output path |
 |---|---|---|
-| PR #123 | `pr123` | `./reviews/motorq_fleet-streams_pr123/pr123_review.md` |
-| Tag diff v1.2.3…v1.2.4 | `v1.2.3..v1.2.4` | `./reviews/motorq_fleet-streams_v1.2.3..v1.2.4/v1.2.3..v1.2.4_review.md` |
+| PR #123 | `pr123` | `./reviews/owner_repository_pr123/pr123_review.md` |
+| Tag diff v1.2.3…v1.2.4 | `v1.2.3..v1.2.4` | `./reviews/owner_repository_v1.2.3..v1.2.4/v1.2.3..v1.2.4_review.md` |
 
 Example existing outputs:
-- `results/motorq_fleet-streams_pr13889/`
-- `results/motorq_fleet-streams_pr13921/`
+- `results/owner_repository_pr123/`
 
-The target repo being reviewed is **motorq/fleet-streams** (a TypeScript monorepo / data pipeline).
+The target repository is derived from the pull-request or compare URL unless overridden.
