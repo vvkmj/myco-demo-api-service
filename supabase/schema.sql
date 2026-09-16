@@ -36,16 +36,16 @@ alter table public.pr_review_metrics enable row level security;
 create or replace view public.pr_review_metrics_by_client as
 select
   client_id,
-  count(*)                                                   as review_runs,
-  sum((summary->>'total')::int)                              as findings_total,
-  sum((summary->>'confirmed')::int)                          as findings_confirmed,
-  sum((summary->>'falsePositive')::int)                      as findings_false_positive,
-  sum((summary->>'uncertain')::int)                          as findings_uncertain,
-  sum((select count(*) from jsonb_array_elements(findings) f
+  count(*)                                                   as total_reviews,
+  coalesce(sum((summary->>'total')::int), 0)                 as total_findings,
+  coalesce(sum((summary->>'confirmed')::int), 0)             as total_confirmed,
+  coalesce(sum((summary->>'falsePositive')::int), 0)         as total_false_positive,
+  coalesce(sum((summary->>'uncertain')::int), 0)             as total_uncertain,
+  coalesce(sum((select count(*) from jsonb_array_elements(findings) f
        where (f->>'mergeBlocking')::boolean and (f->>'verdict') = 'CONFIRMED'))
-                                                              as merge_blocking_confirmed,
-  min(received_at)                                           as first_seen,
-  max(received_at)                                           as last_seen
+  , 0)                                                       as merge_blocking_confirmed,
+  min(received_at)                                           as first_reported_at,
+  max(received_at)                                           as last_reported_at
 from public.pr_review_metrics
 group by client_id;
 
@@ -55,8 +55,8 @@ create or replace view public.pr_review_metrics_overall as
 select
   count(distinct client_id)                                  as clients,
   count(*)                                                    as review_runs,
-  sum((summary->>'total')::int)                               as findings_total,
-  sum((summary->>'confirmed')::int)                           as findings_confirmed,
-  sum((summary->>'falsePositive')::int)                       as findings_false_positive,
-  sum((summary->>'uncertain')::int)                           as findings_uncertain
+  coalesce(sum((summary->>'total')::int), 0)                  as findings_total,
+  coalesce(sum((summary->>'confirmed')::int), 0)              as findings_confirmed,
+  coalesce(sum((summary->>'falsePositive')::int), 0)          as findings_false_positive,
+  coalesce(sum((summary->>'uncertain')::int), 0)              as findings_uncertain
 from public.pr_review_metrics;
