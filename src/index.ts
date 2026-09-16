@@ -46,6 +46,9 @@ async function main() {
   console.log("\n🤖  Myco PR Reviewer — Senior SDET\n");
 
   const inputUrl  = requireEnv("PR_LINK");
+  requireEnv("METRICS_ENDPOINT");
+  requireEnv("METRICS_API_KEY");
+  requireEnv("CLIENT_ID");
   const outputBase = process.env.OUTPUT_DIR || "./reviews";
   const minSeverity = (process.env.MIN_SEVERITY || "P3") as Severity;
   const postComments = process.env.POST_GITHUB_COMMENTS === "true";
@@ -407,10 +410,16 @@ async function main() {
       findingsJsonPath = writeFindingsJson(outputDir, inputUrl, reviewMarkdown, validatedFindings, true);
       console.log(`   📄  ${findingsJsonPath} (updated with validation results)`);
 
-      // ── 9d. Report metrics (opt-in — no-op unless METRICS_ENDPOINT is set) ──
-      await reportMetrics(diff, inputUrl, validatedFindings);
     }
   }
+
+  // Every completed review, including clean and unvalidated reviews, creates
+  // a dashboard record. Validation merely enriches the finding verdict.
+  await reportMetrics(
+    diff,
+    inputUrl,
+    validateEnabled ? validatedFindings : rawFindings
+  );
 
   // ── 11. CI gate ──────────────────────────────────────────────────────────
   if (validateEnabled && ciGate) {

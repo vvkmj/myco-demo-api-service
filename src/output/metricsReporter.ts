@@ -1,12 +1,12 @@
 import axios from "axios";
 import { ValidatedFinding } from "../validate/findingValidator";
 import { DiffContext } from "../github/prFetcher";
+import { FindingCard } from "../review/finding";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cross-client metrics reporting.
 //
-// Opt-in: if METRICS_ENDPOINT isn't set, this is a complete no-op — existing
-// clients (or a pilot that never configures it) see zero behavior change.
+// Required: every completed review must be represented in Myco's dashboard.
 //
 // Deliberately minimal payload — "counts + finding summaries", not full
 // findings detail. What's sent: finding id, severity, title, verdict,
@@ -50,10 +50,13 @@ export interface MetricsPayload {
   };
 }
 
+type ReportableFinding = Pick<FindingCard, "id" | "severity" | "title"> &
+  Partial<Pick<ValidatedFinding, "verdict" | "mergeBlocking">>;
+
 export function buildMetricsPayload(
   diff: Pick<DiffContext, "owner" | "repo" | "prNumber">,
   prUrl: string,
-  findings: ValidatedFinding[]
+  findings: ReportableFinding[]
 ): MetricsPayload {
   const bySeverity: Record<string, number> = {};
   let confirmed = 0;
@@ -64,7 +67,7 @@ export function buildMetricsPayload(
     bySeverity[f.severity] = (bySeverity[f.severity] || 0) + 1;
     if (f.verdict === "CONFIRMED") confirmed++;
     else if (f.verdict === "FALSE_POSITIVE") falsePositive++;
-    else uncertain++;
+    else if (f.verdict === "UNCERTAIN") uncertain++;
   }
 
   return {
@@ -77,8 +80,8 @@ export function buildMetricsPayload(
       id: f.id,
       severity: f.severity,
       title: f.title,
-      verdict: f.verdict,
-      mergeBlocking: f.mergeBlocking,
+      verdict: f.verdict || "UNVALIDATED",
+      mergeBlocking: f.mergeBlocking || false,
     })),
     summary: {
       total: findings.length,
@@ -91,31 +94,20 @@ export function buildMetricsPayload(
 }
 
 /**
- * Best-effort metrics report. Never throws — a slow, unreachable, or
- * misconfigured metrics endpoint must never fail the actual PR review or
- * the CI gate. A short timeout keeps a hung endpoint from delaying the run.
+ * Metrics are part of the Myco product contract. A failed write fails the job
+ * so a missing dashboard record is visible and can be retried from Actions.
  */
 export async function reportMetrics(
   diff: Pick<DiffContext, "owner" | "repo" | "prNumber">,
   prUrl: string,
-  findings: ValidatedFinding[]
+  findings: ReportableFinding[]
 ): Promise<void> {
-  const endpoint = process.env.METRICS_ENDPOINT;
-  // Always log the on/off decision, even when off. Without this, "opted out"
-  // and "the input never reached this process" (wrong secret name, missing
-  // `with:` line, workflow not yet updated) print identically — nothing —
-  // which is exactly what made a real "no rows showing up" report
-  // undebuggable from the Action log alone. Same reasoning as the
-  // ANTHROPIC_WORKSPACE_ID diagnostic in anthropicClient.ts.
-  if (!endpoint) {
-    console.log("  ℹ️   METRICS_ENDPOINT is not set — metrics reporting skipped.");
-    return;
-  }
+  const endpoint = process.env.METRICS_ENDPOINT!;
 
   const payload = buildMetricsPayload(diff, prUrl, findings);
   const apiKey = process.env.METRICS_API_KEY;
   console.log(
-    `  ℹ️   METRICS_ENDPOINT is set (${endpoint}) — reporting metrics for ${payload.client_id}${apiKey ? "" : " (no METRICS_API_KEY set — sending without auth)"}.`
+    `  ℹ️   Reporting metrics to ${endpoint} for ${payload.client_id}.`
   );
 
   try {
@@ -140,6 +132,6 @@ export async function reportMetrics(
     const detail = status
       ? ` [HTTP ${status}]${body ? ` ${typeof body === "string" ? body : JSON.stringify(body)}` : ""}`
       : "";
-    console.warn(`  ⚠️   Metrics reporting failed (non-fatal): ${err.message}${detail}`);
+    throw new Error(`Metrics reporting failed: ${err.message}${detail}`);
   }
 }
