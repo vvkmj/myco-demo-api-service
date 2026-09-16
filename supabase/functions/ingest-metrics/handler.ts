@@ -60,7 +60,7 @@ export type ValidationResult =
   | { valid: true; payload: MetricsPayload }
   | { valid: false; error: string };
 
-const ALLOWED_VERDICTS = new Set(["CONFIRMED", "FALSE_POSITIVE", "UNCERTAIN"]);
+const ALLOWED_VERDICTS = new Set(["CONFIRMED", "FALSE_POSITIVE", "UNCERTAIN", "UNVALIDATED"]);
 
 /**
  * Validates the inbound payload shape. Deliberately strict about the
