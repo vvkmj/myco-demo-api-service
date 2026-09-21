@@ -7,7 +7,8 @@ import * as path from "path";
 
 const MAX_DEPTH = 2;            // how many import hops to follow (direct deps + their direct deps)
 const MAX_TOTAL_CHARS = 220_000; // ~55k tokens — safety ceiling for the prompt
-const ALLOWED_EXTENSIONS = [".ts", ".js", ".tsx", ".jsx", ".json"];
+const ALLOWED_EXTENSIONS = [".ts", ".js", ".tsx", ".jsx", ".json", ".java"];
+const MAX_JAVA_FILES_TO_SCAN = 5_000;
 
 const IGNORE_DIRS = new Set([
   "node_modules", "dist", "build", ".git",
@@ -27,6 +28,13 @@ function shouldIgnore(filePath: string): boolean {
  * Handles bare paths, extensions, and index files.
  */
 function resolveImport(fromFile: string, importPath: string): string | null {
+  if (path.extname(fromFile) === ".java") {
+    const sourceRoot = findJavaSourceRoot(fromFile);
+    if (!sourceRoot || importPath.endsWith(".*")) return null;
+    const candidate = path.join(sourceRoot, ...importPath.split(".")) + ".java";
+    return fs.existsSync(candidate) ? candidate : null;
+  }
+
   const base = path.resolve(path.dirname(fromFile), importPath);
 
   const candidates = [
@@ -47,8 +55,15 @@ function resolveImport(fromFile: string, importPath: string): string | null {
   return null;
 }
 
-function extractImports(content: string): string[] {
+function extractImports(content: string, extension: string): string[] {
   const results: string[] = [];
+  if (extension === ".java") {
+    const javaImport = /^\s*import\s+(?:static\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)(\.\*)?\s*;/gm;
+    let match: RegExpExecArray | null;
+    while ((match = javaImport.exec(content)) !== null) results.push(match[1] + (match[2] || ""));
+    return results;
+  }
+
   // static imports:  import ... from './foo'
   // dynamic imports: import('./foo')
   // require:         require('./foo')
@@ -59,6 +74,69 @@ function extractImports(content: string): string[] {
     results.push(m[1]);
   }
   return results;
+}
+
+function findJavaSourceRoot(filePath: string): string | null {
+  const parts = path.resolve(filePath).split(path.sep);
+  for (let i = 0; i <= parts.length - 4; i++) {
+    if (parts[i] === "src" && (parts[i + 1] === "main" || parts[i + 1] === "test") && parts[i + 2] === "java") {
+      return parts.slice(0, i + 3).join(path.sep);
+    }
+  }
+  return null;
+}
+
+function javaQualifiedName(filePath: string, content: string): string | null {
+  const packageMatch = /^\s*package\s+([\w.]+)\s*;/m.exec(content);
+  if (!packageMatch) return null;
+  return `${packageMatch[1]}.${path.basename(filePath, ".java")}`;
+}
+
+function findJavaDependents(filePath: string, content: string): string[] {
+  const sourceRoot = findJavaSourceRoot(filePath);
+  const qualifiedName = javaQualifiedName(filePath, content);
+  if (!sourceRoot || !qualifiedName) return [];
+
+  const dependents: string[] = [];
+  const simpleName = path.basename(filePath, ".java");
+  const packageName = qualifiedName.slice(0, -(simpleName.length + 1));
+  const stack = [sourceRoot];
+
+  while (stack.length > 0 && dependents.length < MAX_JAVA_FILES_TO_SCAN) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const candidate = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (!shouldIgnore(candidate)) stack.push(candidate);
+        continue;
+      }
+      if (!entry.isFile() || !candidate.endsWith(".java") || candidate === filePath) continue;
+
+      try {
+        const candidateContent = fs.readFileSync(candidate, "utf-8");
+        const imports = extractImports(candidateContent, ".java");
+        const importsTarget = imports.includes(qualifiedName);
+        const importsPackage = imports.includes(`${packageName}.*`) &&
+          new RegExp(`\\b${escapeRegExp(simpleName)}\\b`).test(candidateContent);
+        if (importsTarget || importsPackage) dependents.push(candidate);
+      } catch {
+        // A file becoming unreadable must not stop review of the PR.
+      }
+    }
+  }
+
+  return dependents;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,7 +202,23 @@ export function buildCodeContext(
       path.join(dir, `${base}.spec.js`),
       path.join(dir, "__tests__", `${base}.test.ts`),
       path.join(dir, "__tests__", `${base}.spec.ts`),
+      path.join(dir, `${base}Test.java`),
+      path.join(dir, `${base}Tests.java`),
     ];
+
+    const javaSourceRoot = ext === ".java" ? findJavaSourceRoot(filePath) : null;
+    if (javaSourceRoot?.includes(`${path.sep}src${path.sep}main${path.sep}java`)) {
+      const relative = path.relative(javaSourceRoot, filePath);
+      const testRoot = javaSourceRoot.replace(
+        `${path.sep}src${path.sep}main${path.sep}java`,
+        `${path.sep}src${path.sep}test${path.sep}java`
+      );
+      const testBase = path.basename(relative, ".java");
+      candidates.push(
+        path.join(testRoot, path.dirname(relative), `${testBase}Test.java`),
+        path.join(testRoot, path.dirname(relative), `${testBase}IT.java`)
+      );
+    }
 
     for (const c of candidates) {
       if (fs.existsSync(c) && !testFiles.includes(c)) {
@@ -165,9 +259,15 @@ export function buildCodeContext(
 
     discoverTestSiblings(filePath);
 
-    for (const importPath of extractImports(content)) {
+    for (const importPath of extractImports(content, ext)) {
       const resolved = resolveImport(filePath, importPath);
       if (resolved) walk(resolved, depth + 1);
+    }
+
+    if (ext === ".java") {
+      for (const dependent of findJavaDependents(filePath, content)) {
+        walk(dependent, depth + 1);
+      }
     }
   }
 
@@ -191,7 +291,7 @@ export function deriveEntryPoints(
   changedFilenames: string[],
   repoRoot: string
 ): string[] {
-  const SOURCE_EXTS = new Set([".ts", ".js", ".tsx", ".jsx"]);
+  const SOURCE_EXTS = new Set([".ts", ".js", ".tsx", ".jsx", ".java"]);
   const TEST_MARKERS = [".test.", ".spec.", "-test.", "-spec.", "_test.", "_spec."];
 
   return changedFilenames
@@ -199,6 +299,7 @@ export function deriveEntryPoints(
       const ext = path.extname(f);
       if (!SOURCE_EXTS.has(ext)) return false;
       if (TEST_MARKERS.some((m) => f.includes(m))) return false;
+      if (ext === ".java" && /(Test|Tests|IT)\.java$/i.test(f)) return false;
       return true;
     })
     .map((f) => path.join(repoRoot, f))

@@ -138,6 +138,12 @@ export function deriveSparseFolders(
       ? filename.substring(0, filename.lastIndexOf("/"))
       : ".";
     if (dir && dir !== ".") folders.add(dir);
+
+    // Java imports are package-qualified, so resolving callers and imports
+    // requires the module's complete Java source root, not only the changed
+    // file's directory.
+    const javaRoot = filename.match(/^(.*(?:^|\/)src\/(?:main|test)\/java)(?:\/|$)/);
+    if (javaRoot) folders.add(javaRoot[1]);
   }
   return Array.from(folders);
 }
