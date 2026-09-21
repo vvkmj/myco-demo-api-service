@@ -12,6 +12,76 @@ scripts exercising the actual shipped functions (11/11 checks passing,
 including a side-by-side repro of the path-traversal bug against the
 pre-fix code to confirm it was really exploitable, not just theoretical).
 
+## Current Reliability Plan (2026-09-21)
+
+Myco is a review and validation layer, not a replacement for a compiler or
+test suite. No tool can guarantee every production defect is caught. The
+merge safety boundary is: required deterministic CI checks first, then Myco's
+contextual review and validation as an additional signal. Do not run arbitrary
+PR build commands in the Myco job because that job has an LLM API key; untrusted
+PR code could exfiltrate it. Client build/test jobs must remain separate from
+the secret-bearing Myco review job.
+
+### Java parity and UniformBasket
+
+- [x] Java is now a first-class source language in `src/code/codeWalker.ts`.
+      Java files are review entry points; package-qualified imports resolve
+      within `src/main/java` / `src/test/java`; direct Java callers that import
+      a changed class are included; and JUnit-style `ClassTest.java` /
+      `ClassIT.java` siblings are discovered. Sparse checkout includes the
+      affected Java source root so this context is available locally. Released
+      in `Myco-backend` commit `a574210` and
+      `myco-bundled-action` commit `10cbdf2`; `@v1` points to `10cbdf2`.
+- [x] Deterministic Java removed-import check: a removed Java import whose
+      simple name is still referenced in the updated source is reported as a
+      confirmed, merge-blocking P1. This catches the UniformBasket
+      `@Param(...)` / removed `Param` import failure even if the LLM misses it.
+- [x] Cross-client metrics are required for Myco client workflows:
+      `metrics_endpoint`, `metrics_api_key`, and `client_id` are mandatory.
+      A metrics delivery failure must fail visibly; dashboard rollups derive
+      counts from the canonical `findings` array rather than an unreliable
+      summary JSON object.
+- [ ] UniformBasket: connect Myco to the client's existing build/test job
+      without executing client code in Myco. Make compilation/tests required
+      checks, run Myco after them with `needs: [build]` and `if: always()`, and
+      pass or fetch the build outcome so a failed compile is surfaced as a
+      deterministic Myco finding and recorded in metrics.
+- [ ] Publish a documented UniformBasket Java workflow template with a separate
+      no-secret build job. Use the repository wrapper where available:
+      `./mvnw -B -DskipTests compile && ./mvnw -B test`, or
+      `./gradlew compileJava test`. Configure Java with `actions/setup-java`.
+
+### Reliability backlog
+
+- [ ] Add a safe CI-result ingestion contract to Myco (build/test status,
+      failing check URL, and concise failure excerpt). It must consume results
+      from a separate trusted build job, never execute arbitrary PR commands
+      inside the LLM-key-bearing action.
+- [ ] Add configurable `MYCO_BUILD_COMMAND` / `MYCO_TEST_COMMAND` documentation
+      for the client's separate CI job, not as commands Myco executes. Include
+      Maven and Gradle examples and require an explicit opt-in for any custom
+      command.
+- [ ] Add Java static-analysis integrations as required checks: Error Prone,
+      SpotBugs, PMD/Checkstyle, dependency/version enforcement, and secret /
+      vulnerable-dependency scanning. Myco should summarize actionable failed
+      checks rather than duplicate their diagnostics.
+- [ ] Add Spring and JPA-aware deterministic checks: controller/API contract
+      changes, repository query method validity, DTO/entity field removals,
+      nullability, transaction boundaries, and database migration compatibility.
+- [ ] Add diff-aware Java test expectations: JUnit coverage for changed
+      production paths, JaCoCo diff coverage for critical modules, and PIT
+      mutation testing for risk-prone services.
+- [ ] Create a Java regression evaluation corpus from escaped and deliberately
+      seeded bugs (including UniformBasket's removed `Param` import). Run it on
+      every Myco release, and track recall, false-positive rate, validation
+      accuracy, and whether findings were posted correctly.
+- [ ] Add a persistent cross-PR knowledge graph and true cross-service tracing;
+      today's dependency context is deliberately bounded to two hops and one
+      repository per run.
+- [ ] Release immutable semantic tags (for example `v1.1.0`) alongside the
+      floating `v1` tag. Use immutable tags for controlled client rollouts and
+      retain `v1` only for clients who opt into automatic updates.
+
 ## Pilot #2 — UniformBasket (external, self-serve, private repo)
 
 Second pilot client, free, self-serve setup on their own private repo —
