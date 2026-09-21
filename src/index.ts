@@ -12,10 +12,11 @@ import { reviewPR, Severity } from "./review/prReviewer";
 import { fetchLinkedContext } from "./intent/linkFetcher";
 import { postReviewComments, postConfirmedInlineComments, postTicketLinks, fetchAlreadyRaisedFindings, AlreadyRaisedResult } from "./github/prCommenter";
 import { parseFindings } from "./review/finding";
-import { validateFindings, buildValidationSection, ValidatedFinding } from "./validate/findingValidator";
+import { validateFindings, buildValidationSection, findingHash, ValidatedFinding } from "./validate/findingValidator";
 import { createTicketCreator } from "./tickets/ticketCreator";
 import { writeFindingsJson, loadTicketHashes, saveTicketHash } from "./output/findingsExporter";
 import { reportMetrics } from "./output/metricsReporter";
+import { findRemovedJavaImportUses } from "./static/javaImportCheck";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -227,7 +228,12 @@ async function main() {
   }
 
   // ── 8. Parse findings + write base findings.json ─────────────────────────
-  const rawFindings = parseFindings(reviewMarkdown);
+  const modelFindings = parseFindings(reviewMarkdown);
+  const staticFindings = repoPath ? findRemovedJavaImportUses(diff, repoPath) : [];
+  const rawFindings = [...modelFindings, ...staticFindings];
+  if (staticFindings.length > 0) {
+    console.log(`\n🚫  Static analysis found ${staticFindings.length} Java compilation error(s).`);
+  }
   console.log(`\n📋  Parsed ${rawFindings.length} finding(s) from review.`);
 
   // Auto-detect Jira: if all three credentials are present, enable ticket creation
@@ -269,13 +275,28 @@ async function main() {
         ? createLLMClient(process.env.VALIDATOR_MODEL)
         : claude;
 
-      validatedFindings = await validateFindings(
-        rawFindings,
+      const modelValidatedFindings = await validateFindings(
+        modelFindings,
         diffMarkdown,
         repoPath ?? undefined,
         codeContext,
         validatorClaude
       );
+
+      // A removed Java import that remains referenced is a compiler error,
+      // not a probabilistic LLM judgement. It deliberately bypasses the LLM
+      // validator, whose finding-ID parser only handles model-generated IDs.
+      validatedFindings = [
+        ...modelValidatedFindings,
+        ...staticFindings.map((finding) => ({
+          ...finding,
+          verdict: "CONFIRMED" as const,
+          mergeBlocking: true,
+          confidence: "HIGH" as const,
+          validatorReasoning: "Static analysis: a removed Java import is still referenced in the updated source.",
+          hash: findingHash(finding),
+        })),
+      ];
 
       // ── 9c. Fetch already-raised findings from PR comments ────────────────
       // Reads existing inline review threads and "Jira Tickets Filed" issue

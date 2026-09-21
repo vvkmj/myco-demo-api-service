@@ -37,10 +37,13 @@ create or replace view public.pr_review_metrics_by_client as
 select
   client_id,
   count(*)                                                   as total_reviews,
-  coalesce(sum((summary->>'total')::int), 0)                 as total_findings,
-  coalesce(sum((summary->>'confirmed')::int), 0)             as total_confirmed,
-  coalesce(sum((summary->>'falsePositive')::int), 0)         as total_false_positive,
-  coalesce(sum((summary->>'uncertain')::int), 0)             as total_uncertain,
+  coalesce(sum(jsonb_array_length(findings)), 0)             as total_findings,
+  coalesce(sum((select count(*) from jsonb_array_elements(findings) f
+       where f->>'verdict' = 'CONFIRMED')), 0)                as total_confirmed,
+  coalesce(sum((select count(*) from jsonb_array_elements(findings) f
+       where f->>'verdict' = 'FALSE_POSITIVE')), 0)           as total_false_positive,
+  coalesce(sum((select count(*) from jsonb_array_elements(findings) f
+       where f->>'verdict' = 'UNCERTAIN')), 0)                as total_uncertain,
   coalesce(sum((select count(*) from jsonb_array_elements(findings) f
        where (f->>'mergeBlocking')::boolean and (f->>'verdict') = 'CONFIRMED'))
   , 0)                                                       as merge_blocking_confirmed,
@@ -55,8 +58,11 @@ create or replace view public.pr_review_metrics_overall as
 select
   count(distinct client_id)                                  as clients,
   count(*)                                                    as review_runs,
-  coalesce(sum((summary->>'total')::int), 0)                  as findings_total,
-  coalesce(sum((summary->>'confirmed')::int), 0)              as findings_confirmed,
-  coalesce(sum((summary->>'falsePositive')::int), 0)          as findings_false_positive,
-  coalesce(sum((summary->>'uncertain')::int), 0)              as findings_uncertain
+  coalesce(sum(jsonb_array_length(findings)), 0)              as findings_total,
+  coalesce(sum((select count(*) from jsonb_array_elements(findings) f
+       where f->>'verdict' = 'CONFIRMED')), 0)                as findings_confirmed,
+  coalesce(sum((select count(*) from jsonb_array_elements(findings) f
+       where f->>'verdict' = 'FALSE_POSITIVE')), 0)           as findings_false_positive,
+  coalesce(sum((select count(*) from jsonb_array_elements(findings) f
+       where f->>'verdict' = 'UNCERTAIN')), 0)                as findings_uncertain
 from public.pr_review_metrics;
