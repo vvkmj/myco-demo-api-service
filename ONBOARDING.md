@@ -66,7 +66,7 @@ jobs:
 ```
 
 That's it for the bare minimum — `litellm_base_url` defaults to OpenAI's
-own endpoint, `litellm_model` defaults to `gpt-4.1`.
+own endpoint, `litellm_model` defaults to `gpt-5.5`.
 
 ### Variants
 

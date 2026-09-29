@@ -38,7 +38,7 @@ jobs:
           api_key: ${{ secrets.LLM_API_KEY }}
 ```
 
-This is the whole setup for a standard OpenAI-compatible key — it defaults to `gpt-4.1` against OpenAI's own endpoint.
+This is the whole setup for a standard OpenAI-compatible key — it defaults to `gpt-5.5` against OpenAI's own endpoint.
 
 ## Step 3 — Add your API key as a secret
 

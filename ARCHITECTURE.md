@@ -10,7 +10,7 @@ Myco is an automated SDET (Software Development Engineer in Test) review agent. 
 |---|---|
 | Language | TypeScript (Node 20) |
 | LLM transport | OpenAI SDK (`openai` npm package) pointed at a **LiteLLM proxy** |
-| Review model | `claude-sonnet-4-6` (configurable via `LITELLM_MODEL`) |
+| Review model | `gpt-5.5` (configurable via `LITELLM_MODEL`) |
 | Validator model | `quality/Kimi-K2.6` (configurable via `VALIDATOR_MODEL`) |
 | GitHub API | `axios` — REST calls to `api.github.com` |
 | Jira API | `axios` — Jira Cloud REST v3 |
@@ -227,7 +227,7 @@ External repositories install `MycoIntelligence/myco-bundled-action@v1` in their
 | `LITELLM_API_KEY` | Yes | API key for LiteLLM proxy |
 | `LITELLM_BASE_URL` | Yes | Base URL of LiteLLM proxy |
 | `GITHUB_TOKEN` | Yes (for comments) | GitHub App token for posting PR comments and reading PR diffs |
-| `LITELLM_MODEL` | No | Review model (default: `claude-sonnet-4-6`) |
+| `LITELLM_MODEL` | No | Review model (default: `gpt-5.5`) |
 | `VALIDATOR_MODEL` | No | Validation model (default: `quality/Kimi-K2.6`) |
 | `MIN_SEVERITY` | No | Lowest severity to generate (default: `P3`) |
 | `GATE_MIN_SEVERITY` | No | Lowest severity that blocks merges (default: `P1`) |

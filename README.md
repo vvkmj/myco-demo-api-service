@@ -196,7 +196,7 @@ Orchestrator. Flow:
 | `GITHUB_TOKEN` | No | — | GitHub PAT (for private repos / rate limits; required if `POST_GITHUB_COMMENTS=true`) |
 | `LITELLM_API_KEY` | Yes | — | API key for LiteLLM proxy |
 | `LITELLM_BASE_URL` | Yes | — | LiteLLM proxy base URL |
-| `LITELLM_MODEL` | No | `claude-sonnet-4-6` | Model name for the initial review pass |
+| `LITELLM_MODEL` | No | `gpt-5.5` | Model name for the initial review pass |
 | `VALIDATOR_MODEL` | No | same as `LITELLM_MODEL` | Model name for the validator second-pass (can be a smarter/different model) |
 | `FLEET_STREAMS_REPO` | No | — | Git URL for fleet-streams repo |
 | `FLEET_STREAMS_BRANCH` | No | `main` | Branch to checkout |

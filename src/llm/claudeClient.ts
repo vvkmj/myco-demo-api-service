@@ -99,7 +99,7 @@ export class LiteLLMClient implements LLMClient {
     }
     const baseURL = process.env.LITELLM_BASE_URL;
     if (!baseURL) throw new Error("Missing env var: LITELLM_BASE_URL");
-    this.modelName = modelOverride || process.env.LITELLM_MODEL || "claude-sonnet-4-6";
+    this.modelName = modelOverride || process.env.LITELLM_MODEL || "gpt-5.5";
     this.client = new OpenAI({
       apiKey,
       baseURL,
