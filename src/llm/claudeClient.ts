@@ -111,6 +111,13 @@ export class LiteLLMClient implements LLMClient {
     });
   }
 
+  private usesCompletionTokens(): boolean {
+    // GPT-5 Chat Completions rejects the legacy max_tokens parameter. Keep
+    // the older shape for other OpenAI-compatible providers, which often
+    // still require it.
+    return /^gpt-5(?:[.-]|$)/i.test(this.modelName);
+  }
+
   async generate(prompt: string, repoPath?: string, streamTo?: fs.WriteStream): Promise<string> {
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: "user", content: prompt },
@@ -142,8 +149,9 @@ export class LiteLLMClient implements LLMClient {
         try {
           const stream = await this.client.chat.completions.create({
             model: this.modelName,
-            max_tokens: 32768,
-            temperature: 0,
+            ...(this.usesCompletionTokens()
+              ? { max_completion_tokens: 32768 }
+              : { max_tokens: 32768, temperature: 0 }),
             messages,
             tools,
             tool_choice: tools ? "auto" : undefined,
