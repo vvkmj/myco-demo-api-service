@@ -79,6 +79,15 @@ Orchestrator. Flow:
 
 ---
 
+### `src/multirepo/`
+Cross-repository dependency resolution and impact analysis:
+- **`multiRepoResolver.ts`**: Detects external repository dependencies from the PR diff and package configurations (`MULTI_REPO_MAP`, auto-detection from `package.json` GitHub dependencies, Go module URLs).
+- **`multiRepoCloner.ts`**: Securely shallow-clones external dependencies into isolated working directories using authenticated tokens with path-traversal safeguards.
+- **`multiRepoAnalyser.ts`**: Builds static export symbol indexes for external repositories, verifies imported variables/types against external exports, checks reverse dependencies (external repos consuming exports from this PR), and generates deterministic `P1-XREPO-*` findings for missing symbols.
+- **`multiRepoIntegration.ts`**: Formats cross-repo context sections for the reviewer and validator prompts, generates markdown summaries, and automatically promotes deterministic cross-repo findings to `CONFIRMED`.
+
+---
+
 ### `src/github/prFetcher.ts`
 - **`fetchDiffContext(url)`** — single public entry point; detects URL type and routes:
   - `github.com/.../pull/N` → `fetchPRContext()` — calls `/pulls/{N}` + `/pulls/{N}/files`

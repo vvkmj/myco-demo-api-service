@@ -22,6 +22,30 @@ PR build commands in the Myco job because that job has an LLM API key; untrusted
 PR code could exfiltrate it. Client build/test jobs must remain separate from
 the secret-bearing Myco review job.
 
+### Multi-Repository Support
+
+- [x] Multi-repository dependency understanding and impact verification:
+      The reviewer detects cross-repository imports from PR diffs, package.json
+      GitHub dependencies, and Go module specifiers. Mapped external repositories
+      are shallow-cloned securely. Symbol exports are statically indexed to verify
+      that imported variables, functions, and types exist, and external repositories
+      consuming symbols modified in this PR are identified. Missing cross-repo symbols
+      produce deterministic P1 findings (`P1-XREPO-*`), and verified cross-repo contracts
+      are injected into the reviewer and validator prompts with multi-repo `read_file`
+      tool capabilities.
+- [x] Bidirectional contract verification ("and vice versa"):
+      Statically detects when a PR removes or modifies an exported symbol that is actively
+      consumed by an external repository (`P1-XREPO-BREAKING-*`). Both directions are
+      promoted to CONFIRMED merge-blocking findings.
+- [x] Production hardening and performance optimization:
+      1. Default branch flexibility: avoids hardcoded `main` failures on repositories
+         using `master` or custom default branches.
+      2. Security: token sanitization across all git error stacks and logs, strict slug
+         regex preventing path traversal (`..`), safe branch ref validation.
+      3. Performance: cached primary export index, word-set tokenization, fail-safe
+         cleanup in `try ... finally` block.
+      4. Complete automated test suite in `tests/multirepo.test.ts` (100% passing).
+
 ### Java parity and UniformBasket
 
 - [x] Java is now a first-class source language in `src/code/codeWalker.ts`.

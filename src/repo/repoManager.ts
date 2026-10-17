@@ -53,6 +53,21 @@ export function redactForLog(repoUrl: string): string {
   }
 }
 
+function sanitizeGitError(err: any): Error {
+  const msg = (err?.message || String(err)).replace(
+    /https:\/\/[^@\s]+@github\.com/gi,
+    (m: string) => redactForLog(m)
+  );
+  const sanitized = new Error(msg);
+  if (err?.stack) {
+    sanitized.stack = err.stack.replace(
+      /https:\/\/[^@\s]+@github\.com/gi,
+      (m: string) => redactForLog(m)
+    );
+  }
+  return sanitized;
+}
+
 /**
  * Clone or pull a target repo with optional sparse checkout.
  *
@@ -75,51 +90,71 @@ export function redactForLog(repoUrl: string): string {
  */
 export function cloneTargetRepo(
   repoUrl: string,
-  branch: string,
-  targetDir: string,
+  branch?: string,
+  targetDir: string = "./target-repo",
   sparseFolders: string[] = [],
   authToken?: string
 ): void {
   assertSafeArg(repoUrl, "repo URL");
-  assertSafeArg(branch, "branch name");
+  if (branch) {
+    assertSafeArg(branch, "branch name");
+  }
 
   const authedUrl = withAuth(repoUrl, authToken);
 
-  if (fs.existsSync(targetDir)) {
-    console.log(`\n📦  Repo exists at ${targetDir} — pulling latest (${branch})...`);
-    try {
-      // Re-set the remote URL every time (cheap, idempotent) so a stale or
-      // differently-authed remote from a prior run doesn't cause a
-      // confusing auth failure here instead of at clone time.
-      execFileSync("git", ["-C", targetDir, "remote", "set-url", "origin", authedUrl], { stdio: "inherit" });
-      execFileSync("git", ["-C", targetDir, "fetch", "--depth=1"], { stdio: "inherit" });
-      execFileSync("git", ["-C", targetDir, "reset", "--hard", `origin/${branch}`], { stdio: "inherit" });
-      console.log("✅  Repo up to date.");
-      return;
-    } catch {
-      console.warn("⚠️   Pull failed — deleting and re-cloning...");
-      fs.rmSync(targetDir, { recursive: true, force: true });
+  try {
+    if (fs.existsSync(targetDir)) {
+      console.log(`\n📦  Repo exists at ${targetDir} — pulling latest (${branch || "default"})...`);
+      try {
+        // Re-set the remote URL every time (cheap, idempotent) so a stale or
+        // differently-authed remote from a prior run doesn't cause a
+        // confusing auth failure here instead of at clone time.
+        execFileSync("git", ["-C", targetDir, "remote", "set-url", "origin", authedUrl], { stdio: "inherit" });
+        execFileSync("git", ["-C", targetDir, "fetch", "--depth=1"], { stdio: "inherit" });
+        if (branch) {
+          execFileSync("git", ["-C", targetDir, "reset", "--hard", `origin/${branch}`], { stdio: "inherit" });
+        } else {
+          execFileSync("git", ["-C", targetDir, "reset", "--hard", "FETCH_HEAD"], { stdio: "inherit" });
+        }
+        console.log("✅  Repo up to date.");
+        return;
+      } catch {
+        console.warn("⚠️   Pull failed — deleting and re-cloning...");
+        fs.rmSync(targetDir, { recursive: true, force: true });
+      }
     }
+
+    console.log(`\n📦  Cloning ${redactForLog(authedUrl)} (${branch || "default"}) into ${targetDir}...`);
+    const cloneArgs = ["clone", "--depth=1", "--filter=blob:none", "--sparse"];
+    if (branch) {
+      cloneArgs.push("--branch", branch);
+    }
+    cloneArgs.push(authedUrl, targetDir);
+    execFileSync("git", cloneArgs, { stdio: "inherit" });
+
+    if (sparseFolders.length > 0) {
+      console.log(
+        `🗂️   Sparse checkout — ${sparseFolders.length} folder(s):\n` +
+          sparseFolders.map((f) => `   • ${f}`).join("\n")
+      );
+      execFileSync("git", ["-C", targetDir, "sparse-checkout", "set", ...sparseFolders], {
+        stdio: "inherit",
+      });
+    } else {
+      // Check out full tree when no sparse folders are specified
+      try {
+        execFileSync("git", ["-C", targetDir, "sparse-checkout", "disable"], {
+          stdio: "inherit",
+        });
+      } catch {
+        // sparse-checkout might not be enabled or git version difference
+      }
+    }
+
+    console.log("✅  Repo cloned.");
+  } catch (err: any) {
+    throw sanitizeGitError(err);
   }
-
-  console.log(`\n📦  Cloning ${redactForLog(authedUrl)} (${branch}) into ${targetDir}...`);
-  execFileSync(
-    "git",
-    ["clone", "--depth=1", "--filter=blob:none", "--sparse", "--branch", branch, authedUrl, targetDir],
-    { stdio: "inherit" }
-  );
-
-  if (sparseFolders.length > 0) {
-    console.log(
-      `🗂️   Sparse checkout — ${sparseFolders.length} folder(s):\n` +
-        sparseFolders.map((f) => `   • ${f}`).join("\n")
-    );
-    execFileSync("git", ["-C", targetDir, "sparse-checkout", "set", ...sparseFolders], {
-      stdio: "inherit",
-    });
-  }
-
-  console.log("✅  Repo cloned.");
 }
 
 /**

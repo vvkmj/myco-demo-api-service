@@ -17,6 +17,10 @@ export interface ReviewInput {
   minSeverity?: Severity;
   /** Best-effort text fetched from links found in the PR description (see src/intent/linkFetcher.ts). Undefined/empty if none found or link-following is disabled. */
   linkedContext?: string;
+  /** Cross-repository analysis context to inject into prompt. */
+  crossRepoContext?: string;
+  /** Map of repo slugs/prefixes to local directories for multi-repo read_file tool calls. */
+  repoPathMap?: Map<string, string>;
 }
 
 export interface ReviewOutput {
@@ -35,7 +39,7 @@ export async function reviewPR(
   input: ReviewInput,
   claude: LLMClient
 ): Promise<ReviewOutput> {
-  const { diff, diffMarkdown, repoPath, codeContext, testCoverageSummary, outputDir, minSeverity, linkedContext } = input;
+  const { diff, diffMarkdown, repoPath, codeContext, testCoverageSummary, outputDir, minSeverity, linkedContext, crossRepoContext, repoPathMap } = input;
 
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
@@ -49,8 +53,8 @@ export async function reviewPR(
   const fileStream = fs.createWriteStream(outputPath, { encoding: "utf-8" });
   console.log(`\n🔬 Running SDET review... (streaming → ${outputPath})`);
 
-  const prompt = buildReviewPrompt(diff, diffMarkdown, codeContext, testCoverageSummary, minSeverity, linkedContext);
-  const review = await claude.generate(prompt, repoPath, fileStream);
+  const prompt = buildReviewPrompt(diff, diffMarkdown, codeContext, testCoverageSummary, minSeverity, linkedContext, crossRepoContext);
+  const review = await claude.generate(prompt, repoPath, fileStream, repoPathMap);
 
   if (!review || review.trim().length === 0) {
     throw new Error("Claude returned an empty review");
@@ -98,7 +102,8 @@ function buildReviewPrompt(
   codeContext: string | undefined,
   testCoverageSummary: string,
   minSeverity?: Severity,
-  linkedContext?: string
+  linkedContext?: string,
+  crossRepoContext?: string
 ): string {
   const hasTests = testCoverageSummary.trim().length > 0;
   const hasCodeContext = !!codeContext && codeContext.trim().length > 0;
@@ -212,7 +217,7 @@ ${diffMarkdown}
 
 ---
 
-${hasCodeContext ? `## Related Code Context (import graph of changed files)\n${codeContext}\n\n---\n\n` : ""}## Existing Test Coverage
+${crossRepoContext ? `${crossRepoContext}\n\n---\n\n` : ""}${hasCodeContext ? `## Related Code Context (import graph of changed files)\n${codeContext}\n\n---\n\n` : ""}## Existing Test Coverage
 ${hasTests ? testCoverageSummary : "_No test paths provided — flag coverage gaps based on the diff alone._"}
 
 ---

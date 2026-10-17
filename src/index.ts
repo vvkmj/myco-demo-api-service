@@ -17,6 +17,18 @@ import { createTicketCreator } from "./tickets/ticketCreator";
 import { writeFindingsJson, loadTicketHashes, saveTicketHash } from "./output/findingsExporter";
 import { reportMetrics } from "./output/metricsReporter";
 import { findRemovedJavaImportUses } from "./static/javaImportCheck";
+import {
+  resolveMultiRepoDependencies,
+  parseRepoMappings,
+  parseRepoTokens,
+  cloneExternalRepos,
+  cleanupExternalRepos,
+  analyzeMultiRepoDependencies,
+  buildMultiRepoContext,
+  emptyMultiRepoContext,
+  promoteXRepoFindings,
+  ClonedExternalRepo,
+} from "./multirepo";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -113,6 +125,37 @@ async function main() {
   // arbitrary TARGET_REPO host.
   cloneTargetRepo(repoUrl, branch, repoPath, sparseFolders, process.env.GITHUB_TOKEN);
 
+  // ── 3b. Resolve & Clone Multi-Repository Dependencies ───────────────────
+  // Strict backward compatibility: default is disabled. MULTI_REPO_ENABLED="false"
+  // explicitly overrides auto-detect or mappings.
+  const multiRepoExplicitDisabled = process.env.MULTI_REPO_ENABLED === "false";
+  const multiRepoEnabled =
+    !multiRepoExplicitDisabled &&
+    (process.env.MULTI_REPO_ENABLED === "true" ||
+      (!!process.env.MULTI_REPO_MAP && process.env.MULTI_REPO_MAP.trim().length > 0));
+
+  let clonedRepos: ClonedExternalRepo[] = [];
+  let multiRepoCtx = emptyMultiRepoContext();
+
+  if (multiRepoEnabled && repoPath) {
+    console.log("\n🌐  Multi-repository mode active.");
+    const mappings = parseRepoMappings(process.env.MULTI_REPO_MAP);
+    const tokens = parseRepoTokens(process.env.MULTI_REPO_TOKENS);
+    const autoDetect = process.env.MULTI_REPO_AUTO_DETECT !== "false";
+
+    const resolution = resolveMultiRepoDependencies(diff, repoPath, mappings, tokens, autoDetect);
+
+    if (resolution.hasCrossRepoDeps) {
+      clonedRepos = cloneExternalRepos(resolution.dependencies);
+      const analysis = analyzeMultiRepoDependencies(clonedRepos, repoPath, diff);
+      multiRepoCtx = buildMultiRepoContext(resolution, clonedRepos, analysis);
+    } else {
+      console.log("  ℹ️   No cross-repository dependencies detected for this PR.");
+    }
+  }
+
+  try {
+
   // ── 4. Build static code context from import graph ──────────────────────
   let codeContext: string | undefined;
   if (repoPath) {
@@ -122,7 +165,7 @@ async function main() {
       repoPath
     );
     if (entryPoints.length > 0) {
-      const ctx = buildCodeContext(entryPoints, repoPath);
+      const ctx = buildCodeContext(entryPoints, repoPath, multiRepoCtx.repoPathMap);
       codeContext = ctx.content;
       console.log(
         `✅  Code context built — ${ctx.files.length} file(s)` +
@@ -189,7 +232,7 @@ async function main() {
 
   const outputDir = path.join(outputBase, `${diff.owner}_${diff.repo}_${diff.slug}`);
 
-  const { outputPath, reviewMarkdown } = await reviewPR(
+  const { outputPath, reviewMarkdown: initialReviewMarkdown } = await reviewPR(
     {
       diff,
       diffMarkdown,
@@ -199,9 +242,19 @@ async function main() {
       outputDir,
       minSeverity,
       linkedContext,
+      crossRepoContext: multiRepoCtx.reviewContext,
+      repoPathMap: multiRepoCtx.repoPathMap,
     },
     claude
   );
+
+  let reviewMarkdown = initialReviewMarkdown;
+  if (multiRepoCtx.analysisSummary) {
+    reviewMarkdown += multiRepoCtx.analysisSummary;
+    try {
+      fs.appendFileSync(outputPath, multiRepoCtx.analysisSummary, "utf-8");
+    } catch {}
+  }
 
   const validateEnabled = process.env.VALIDATE_FINDINGS === "true";
 
@@ -230,9 +283,12 @@ async function main() {
   // ── 8. Parse findings + write base findings.json ─────────────────────────
   const modelFindings = parseFindings(reviewMarkdown);
   const staticFindings = repoPath ? findRemovedJavaImportUses(diff, repoPath) : [];
-  const rawFindings = [...modelFindings, ...staticFindings];
+  const rawFindings = [...modelFindings, ...staticFindings, ...multiRepoCtx.staticFindings];
   if (staticFindings.length > 0) {
     console.log(`\n🚫  Static analysis found ${staticFindings.length} Java compilation error(s).`);
+  }
+  if (multiRepoCtx.staticFindings.length > 0) {
+    console.log(`\n🚫  Multi-repo analysis found ${multiRepoCtx.staticFindings.length} cross-repo issue(s).`);
   }
   console.log(`\n📋  Parsed ${rawFindings.length} finding(s) from review.`);
 
@@ -280,12 +336,16 @@ async function main() {
         diffMarkdown,
         repoPath ?? undefined,
         codeContext,
-        validatorClaude
+        validatorClaude,
+        multiRepoCtx.repoPathMap,
+        multiRepoCtx.validatorContext
       );
 
       // A removed Java import that remains referenced is a compiler error,
       // not a probabilistic LLM judgement. It deliberately bypasses the LLM
       // validator, whose finding-ID parser only handles model-generated IDs.
+      const promotedXRepo = promoteXRepoFindings(multiRepoCtx.staticFindings);
+
       validatedFindings = [
         ...modelValidatedFindings,
         ...staticFindings.map((finding) => ({
@@ -296,6 +356,7 @@ async function main() {
           validatorReasoning: "Static analysis: a removed Java import is still referenced in the updated source.",
           hash: findingHash(finding),
         })),
+        ...promotedXRepo,
       ];
 
       // ── 9c. Fetch already-raised findings from PR comments ────────────────
@@ -461,6 +522,7 @@ async function main() {
         confirmedBlockers.map((f) => `\n     [${f.id}] ${f.title}`).join("")
       );
       console.error("   PR is blocked from merging.");
+      if (clonedRepos.length > 0) cleanupExternalRepos(clonedRepos);
       process.exit(1);
     } else {
       console.log("\n✅  No confirmed merge-blocking bugs — PR may proceed.");
@@ -470,6 +532,12 @@ async function main() {
   // ── Done ─────────────────────────────────────────────────────────────────
   console.log(`\n✅  Done!`);
   console.log(`   📄  ${outputPath}`);
+} finally {
+    // ── Clean up external repo clones (guaranteed fail-safe execution) ──────
+    if (clonedRepos.length > 0) {
+      cleanupExternalRepos(clonedRepos);
+    }
+  }
 }
 
 main().catch((err) => {

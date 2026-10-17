@@ -110,7 +110,12 @@ export class AnthropicClient implements LLMClient {
     });
   }
 
-  async generate(prompt: string, repoPath?: string, streamTo?: fs.WriteStream): Promise<string> {
+  async generate(
+    prompt: string,
+    repoPath?: string,
+    streamTo?: fs.WriteStream,
+    repoPathMap?: Map<string, string>
+  ): Promise<string> {
     const messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
     const tools = repoPath ? FILE_TOOLS : undefined;
 
@@ -195,7 +200,7 @@ export class AnthropicClient implements LLMClient {
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
       for (const tb of toolUseBlocks) {
         const args = (tb.input ?? {}) as Record<string, string>;
-        const result = executeTool(tb.name, args, repoPath);
+        const result = executeTool(tb.name, args, repoPath, repoPathMap);
         toolCallCount++;
         console.log(`  🔧  [tool #${toolCallCount}] ${tb.name}(${args.path ?? ""})`);
         toolResults.push({ type: "tool_result", tool_use_id: tb.id, content: result });

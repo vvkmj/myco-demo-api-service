@@ -38,7 +38,8 @@ export function findingHash(finding: FindingCard): string {
 function buildValidatorPrompt(
   findings: FindingCard[],
   diffMarkdown: string,
-  codeContext: string | undefined
+  codeContext: string | undefined,
+  crossRepoContext?: string
 ): string {
   const findingCards = findings
     .map(
@@ -95,7 +96,7 @@ ${findingCards}
 
 ${diffMarkdown}
 
-${hasCodeContext ? `---\n\n## Related Code Context (import graph)\n${codeContext}\n` : ""}
+${crossRepoContext ? `---\n\n${crossRepoContext}\n` : ""}${hasCodeContext ? `---\n\n## Related Code Context (import graph)\n${codeContext}\n` : ""}
 
 ---
 
@@ -168,7 +169,9 @@ export async function validateFindings(
   diffMarkdown: string,
   repoPath: string | undefined,
   codeContext: string | undefined,
-  claude: LLMClient
+  claude: LLMClient,
+  repoPathMap?: Map<string, string>,
+  crossRepoContext?: string
 ): Promise<ValidatedFinding[]> {
   if (findings.length === 0) return [];
 
@@ -176,7 +179,7 @@ export async function validateFindings(
     `\n🔍  Validating ${findings.length} finding(s) against the codebase...`
   );
 
-  const prompt = buildValidatorPrompt(findings, diffMarkdown, codeContext);
+  const prompt = buildValidatorPrompt(findings, diffMarkdown, codeContext, crossRepoContext);
 
   // Use a separate validator model if configured, otherwise fall back to the
   // same model. We pass repoPath so the validator can use read_file tool calls.
@@ -187,7 +190,7 @@ export async function validateFindings(
 
   let rawResponse: string;
   try {
-    rawResponse = await claude.generate(prompt, repoPath);
+    rawResponse = await claude.generate(prompt, repoPath, undefined, repoPathMap);
   } finally {
     // Restore original model regardless of outcome
     if (process.env.VALIDATOR_MODEL && savedModel !== undefined) {

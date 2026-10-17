@@ -4,14 +4,20 @@ import * as path from "path";
 
 export interface LLMClient {
   /**
-   * @param prompt     The prompt to send to the model.
-   * @param repoPath   If set, enables read_file / list_directory tool calls
-   *                   scoped to this directory.
-   * @param streamTo   If set, streams response chunks to this writable stream
-   *                   as they arrive (e.g. a file write stream). Terminal output
-   *                   is suppressed when streamTo is provided.
+   * @param prompt      The prompt to send to the model.
+   * @param repoPath    If set, enables read_file / list_directory tool calls
+   *                    scoped to this directory.
+   * @param streamTo    If set, streams response chunks to this writable stream
+   *                    as they arrive (e.g. a file write stream). Terminal output
+   *                    is suppressed when streamTo is provided.
+   * @param repoPathMap Optional map of external repo slugs/prefixes to local directories.
    */
-  generate(prompt: string, repoPath?: string, streamTo?: fs.WriteStream): Promise<string>;
+  generate(
+    prompt: string,
+    repoPath?: string,
+    streamTo?: fs.WriteStream,
+    repoPathMap?: Map<string, string>
+  ): Promise<string>;
 }
 
 const FILE_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -31,21 +37,80 @@ const FILE_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   },
 ];
 
-export function executeTool(name: string, args: Record<string, string>, repoRoot: string): string {
-  const root = path.resolve(repoRoot);
-  const target = path.resolve(root, args.path ?? "");
-  // Prevent path traversal outside the repo. A plain `startsWith(root)` check
-  // is exploitable: a sibling directory whose name has `root` as a string
-  // prefix (e.g. root "target-repo" vs. sibling "target-repo-secrets") would
-  // incorrectly pass. Require an exact match or a path separator boundary.
-  if (target !== root && !target.startsWith(root + path.sep)) {
-    return "Error: path is outside the repository root.";
+export function executeTool(
+  name: string,
+  args: Record<string, string>,
+  repoRoot: string,
+  repoPathMap?: Map<string, string>
+): string {
+  const reqPath = args.path ?? "";
+
+  // 1. Check if path explicitly targets an external repo from repoPathMap
+  let resolvedTarget: string | null = null;
+
+  if (repoPathMap && repoPathMap.size > 0) {
+    for (const [slugOrPrefix, extDir] of repoPathMap.entries()) {
+      const extRoot = path.resolve(extDir);
+      // Case A: path starts with slug or prefix (e.g. "org/repo/src/..." or "@shared/types/src/...")
+      if (reqPath.startsWith(slugOrPrefix + "/") || reqPath.startsWith(slugOrPrefix + "\\")) {
+        const subPath = reqPath.slice(slugOrPrefix.length + 1);
+        const candidate = path.resolve(extRoot, subPath);
+        if (candidate === extRoot || candidate.startsWith(extRoot + path.sep)) {
+          resolvedTarget = candidate;
+          break;
+        }
+      }
+      // Case B: path starts with repo name (last part of slug, e.g. "shared-types/src/...")
+      const repoName = slugOrPrefix.split("/").pop();
+      if (repoName && (reqPath.startsWith(repoName + "/") || reqPath.startsWith(repoName + "\\"))) {
+        const subPath = reqPath.slice(repoName.length + 1);
+        const candidate = path.resolve(extRoot, subPath);
+        if (candidate === extRoot || candidate.startsWith(extRoot + path.sep)) {
+          resolvedTarget = candidate;
+          break;
+        }
+      }
+    }
+  }
+
+  // 2. If not explicitly an external repo, check the primary repoRoot first
+  const primaryRoot = path.resolve(repoRoot);
+  const primaryTarget = path.resolve(primaryRoot, reqPath);
+  const isInsidePrimary = primaryTarget === primaryRoot || primaryTarget.startsWith(primaryRoot + path.sep);
+
+  if (!resolvedTarget) {
+    if (isInsidePrimary && fs.existsSync(primaryTarget)) {
+      resolvedTarget = primaryTarget;
+    } else if (!isInsidePrimary) {
+      return "Error: path is outside the repository root.";
+    } else if (repoPathMap && repoPathMap.size > 0) {
+      // 3. Fallback: check if the path exists directly inside any external repo
+      for (const extDir of repoPathMap.values()) {
+        const extRoot = path.resolve(extDir);
+        const candidateDirect = path.resolve(extRoot, reqPath);
+        if (candidateDirect.startsWith(extRoot + path.sep) && fs.existsSync(candidateDirect)) {
+          resolvedTarget = candidateDirect;
+          break;
+        }
+      }
+    }
+
+    // Default to primaryTarget for clear "file not found" message if nowhere found
+    if (!resolvedTarget) {
+      resolvedTarget = primaryTarget;
+    }
   }
 
   if (name === "read_file") {
-    if (!fs.existsSync(target)) return `Error: file not found: ${args.path}`;
-    if (fs.statSync(target).isDirectory()) return `Error: "${args.path}" is a directory — provide a specific file path.`;
-    const content = fs.readFileSync(target, "utf-8");
+    if (!fs.existsSync(resolvedTarget)) return `Error: file not found: ${args.path}`;
+    try {
+      if (fs.statSync(resolvedTarget).isDirectory()) {
+        return `Error: "${args.path}" is a directory — provide a specific file path.`;
+      }
+    } catch {
+      return `Error: cannot read file: ${args.path}`;
+    }
+    const content = fs.readFileSync(resolvedTarget, "utf-8");
     // Cap at 20k chars to keep individual tool results manageable
     return content.length > 20000
       ? content.slice(0, 20000) + "\n... (truncated)"
@@ -118,7 +183,12 @@ export class LiteLLMClient implements LLMClient {
     return /^gpt-5(?:[.-]|$)/i.test(this.modelName);
   }
 
-  async generate(prompt: string, repoPath?: string, streamTo?: fs.WriteStream): Promise<string> {
+  async generate(
+    prompt: string,
+    repoPath?: string,
+    streamTo?: fs.WriteStream,
+    repoPathMap?: Map<string, string>
+  ): Promise<string> {
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: "user", content: prompt },
     ];
@@ -232,7 +302,7 @@ export class LiteLLMClient implements LLMClient {
       for (const tc of calls) {
         let args: Record<string, string> = {};
         try { args = JSON.parse(tc.args); } catch {}
-        const result = executeTool(tc.name, args, repoPath);
+        const result = executeTool(tc.name, args, repoPath, repoPathMap);
         toolCallCount++;
         console.log(`  🔧  [tool #${toolCallCount}] ${tc.name}(${args.path ?? ""})`);
         messages.push({ role: "tool", tool_call_id: tc.id, content: result });

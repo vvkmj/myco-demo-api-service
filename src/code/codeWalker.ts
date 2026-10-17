@@ -27,12 +27,55 @@ function shouldIgnore(filePath: string): boolean {
  * Resolve a relative import path from a source file to an absolute path.
  * Handles bare paths, extensions, and index files.
  */
-function resolveImport(fromFile: string, importPath: string): string | null {
+function resolveImport(
+  fromFile: string,
+  importPath: string,
+  externalRepos?: Map<string, string>
+): string | null {
   if (path.extname(fromFile) === ".java") {
     const sourceRoot = findJavaSourceRoot(fromFile);
     if (!sourceRoot || importPath.endsWith(".*")) return null;
     const candidate = path.join(sourceRoot, ...importPath.split(".")) + ".java";
     return fs.existsSync(candidate) ? candidate : null;
+  }
+
+  // Handle external repository mappings if not a relative path
+  if (!importPath.startsWith(".") && externalRepos && externalRepos.size > 0) {
+    for (const [prefix, extPath] of externalRepos.entries()) {
+      if (importPath === prefix || importPath.startsWith(prefix + "/")) {
+        const sub = importPath === prefix ? "" : importPath.slice(prefix.length + 1);
+        let base = sub ? path.resolve(extPath, sub) : extPath;
+
+        if (!sub && fs.existsSync(path.join(extPath, "package.json"))) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(path.join(extPath, "package.json"), "utf-8"));
+            const entry = pkg.types || pkg.typings || pkg.main || pkg.module;
+            if (entry) base = path.resolve(extPath, entry);
+          } catch {}
+        }
+
+        const candidates = [
+          base,
+          `${base}.ts`,
+          `${base}.tsx`,
+          `${base}.d.ts`,
+          `${base}.js`,
+          `${base}.jsx`,
+          path.join(base, "index.ts"),
+          path.join(base, "index.tsx"),
+          path.join(base, "index.d.ts"),
+          path.join(base, "index.js"),
+          path.join(base, "src", "index.ts"),
+          path.join(base, "src", "index.tsx"),
+        ];
+
+        for (const c of candidates) {
+          try {
+            if (fs.existsSync(c) && fs.statSync(c).isFile()) return c;
+          } catch {}
+        }
+      }
+    }
   }
 
   const base = path.resolve(path.dirname(fromFile), importPath);
@@ -55,7 +98,11 @@ function resolveImport(fromFile: string, importPath: string): string | null {
   return null;
 }
 
-function extractImports(content: string, extension: string): string[] {
+function extractImports(
+  content: string,
+  extension: string,
+  externalRepos?: Map<string, string>
+): string[] {
   const results: string[] = [];
   if (extension === ".java") {
     const javaImport = /^\s*import\s+(?:static\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)(\.\*)?\s*;/gm;
@@ -68,10 +115,20 @@ function extractImports(content: string, extension: string): string[] {
   // dynamic imports: import('./foo')
   // require:         require('./foo')
   const re =
-    /(?:import\s+(?:[\s\S]*?\s+from\s+)?|require\s*\(\s*)['"](\.[^'"]+)['"]/g;
+    /(?:import\s+(?:[\s\S]*?\s+from\s+)?|require\s*\(\s*)['"]([^'"]+)['"]/g;
   let m;
   while ((m = re.exec(content)) !== null) {
-    results.push(m[1]);
+    const spec = m[1];
+    if (spec.startsWith(".")) {
+      results.push(spec);
+    } else if (externalRepos && externalRepos.size > 0) {
+      for (const prefix of externalRepos.keys()) {
+        if (spec === prefix || spec.startsWith(prefix + "/")) {
+          results.push(spec);
+          break;
+        }
+      }
+    }
   }
   return results;
 }
@@ -165,7 +222,8 @@ export interface CodeContext {
  */
 export function buildCodeContext(
   entryPoints: string[],
-  repoRoot: string
+  repoRoot: string,
+  externalRepos?: Map<string, string>
 ): CodeContext {
   const visited = new Set<string>();
   const chunks: string[] = [];
@@ -254,13 +312,22 @@ export function buildCodeContext(
     visited.add(filePath);
     includedFiles.push(filePath);
 
-    const label = path.relative(repoRoot, filePath);
+    let label = path.relative(repoRoot, filePath);
+    if (label.startsWith("..") && externalRepos) {
+      for (const [slugOrPrefix, extPath] of externalRepos.entries()) {
+        const relExt = path.relative(extPath, filePath);
+        if (!relExt.startsWith("..")) {
+          label = `[${slugOrPrefix}] ${relExt}`;
+          break;
+        }
+      }
+    }
     chunks.push(`\n\n=== FILE: ${label} ===\n${content}`);
 
     discoverTestSiblings(filePath);
 
-    for (const importPath of extractImports(content, ext)) {
-      const resolved = resolveImport(filePath, importPath);
+    for (const importPath of extractImports(content, ext, externalRepos)) {
+      const resolved = resolveImport(filePath, importPath, externalRepos);
       if (resolved) walk(resolved, depth + 1);
     }
 
