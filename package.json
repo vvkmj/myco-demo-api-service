@@ -1,0 +1,18 @@
+{
+  "name": "myco-demo-api-service",
+  "version": "1.0.0",
+  "description": "API service that depends on @myco-demo/shared-utils — Myco cross-repo demo",
+  "main": "src/server.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@myco-demo/shared-utils": "github:vvkmj/myco-demo-shared-utils"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}
