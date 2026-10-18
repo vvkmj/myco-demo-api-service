@@ -15,7 +15,6 @@ jobs:
     steps:
       - uses: MycoIntelligence/myco-bundled-action@v1
         env:
-          # Multi-repo env vars — injected directly since they are not action inputs yet
           MULTI_REPO_ENABLED: 'true'
           MULTI_REPO_MAP: '{"@myco-demo/shared-utils":"vvkmj/myco-demo-shared-utils"}'
           MULTI_REPO_GITHUB_TOKEN: ${{ github.token }}
@@ -28,7 +27,7 @@ jobs:
           min_severity: P2
           post_github_comments: 'true'
           ci_gate: 'true'
-          gate_min_severity: P1
-          metrics_endpoint: ${{ secrets.METRICS_ENDPOINT || 'https://example.com/metrics' }}
-          metrics_api_key: ${{ secrets.METRICS_API_KEY || 'placeholder' }}
+          gate_min_severity: P2
+          metrics_endpoint: ${{ secrets.METRICS_ENDPOINT }}
+          metrics_api_key: ${{ secrets.METRICS_API_KEY }}
           client_id: placement-preparation-buddy
