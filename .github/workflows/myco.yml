@@ -16,12 +16,12 @@ jobs:
       - uses: MycoIntelligence/myco-bundled-action@v1
         with:
           pr_link: ${{ github.event.pull_request.html_url }}
-          llm_provider: ${{ vars.LLM_PROVIDER || 'openai' }}
+          llm_provider: openai
           api_key: ${{ secrets.LLM_API_KEY }}
-          litellm_base_url: ${{ vars.LITELLM_BASE_URL }}
-          litellm_model: ${{ vars.LITELLM_MODEL }}
+          litellm_base_url: https://api.groq.com/openai/v1
+          litellm_model: llama-3.3-70b-versatile
           min_severity: P2
-          post_github_comments: ${{ vars.MYCO_POST_COMMENTS || 'false' }}
+          post_github_comments: 'true'
           ci_gate: 'true'
           gate_min_severity: P1
           multi_repo_enabled: 'true'
@@ -32,3 +32,4 @@ jobs:
           metrics_endpoint: ${{ secrets.METRICS_ENDPOINT || 'https://example.com/metrics' }}
           metrics_api_key: ${{ secrets.METRICS_API_KEY || 'placeholder' }}
           client_id: placement-preparation-buddy
+
