@@ -20,6 +20,7 @@
 
 export {
   parseRepoMappings,
+  parseDownstreamRepos,
   parseRepoTokens,
   resolveMultiRepoDependencies,
   type RepoMapping,
@@ -35,9 +36,16 @@ export {
 
 export {
   analyzeMultiRepoDependencies,
+  parseFunctionParams,
+  extractCallArguments,
+  parseInterfaceProperties,
+  findConsumerCallSites,
   type MultiRepoAnalysis,
   type CrossRepoAnalysisResult,
   type ExternalExport,
+  type ConsumerCallSite,
+  type ModifiedExportInfo,
+  type ParsedParam,
 } from "./multiRepoAnalyser";
 
 export {

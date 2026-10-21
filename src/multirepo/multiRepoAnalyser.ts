@@ -24,6 +24,44 @@ export interface ExternalExport {
 }
 
 /**
+ * A concrete call-site or usage of an export in a downstream consumer repository.
+ */
+export interface ConsumerCallSite {
+  repoSlug: string;
+  filePath: string;
+  lineNumber: number;
+  lineText: string;
+  argsPassed: string[];
+  argsCount: number;
+  surroundingContext?: string;
+}
+
+/**
+ * Information about an export that was modified (not removed) in the PR diff.
+ */
+export interface ModifiedExportInfo {
+  symbol: string;
+  file: string;
+  line: number | null;
+  kind: "function" | "interface" | "type" | "class" | "variable" | "other";
+  oldDeclaration: string;
+  newDeclaration: string;
+  oldMinArgs?: number;
+  newMinArgs?: number;
+  removedProperties?: string[];
+  addedRequiredProperties?: string[];
+}
+
+/**
+ * Parsed function parameter metadata.
+ */
+export interface ParsedParam {
+  name: string;
+  isOptional: boolean;
+  hasDefault: boolean;
+}
+
+/**
  * Result of analyzing a single cross-repo dependency.
  */
 export interface CrossRepoAnalysisResult {
@@ -413,6 +451,335 @@ function escapeRegExp(value: string): string {
 }
 
 /**
+ * Parse function parameters and calculate the minimum required arguments
+ * (count of required parameters before the first optional/default/rest param).
+ */
+export function parseFunctionParams(decl: string): { params: ParsedParam[]; minArgs: number } {
+  const openParen = decl.indexOf("(");
+  if (openParen === -1) return { params: [], minArgs: 0 };
+
+  let depth = 0;
+  let endParen = -1;
+  for (let i = openParen; i < decl.length; i++) {
+    const ch = decl[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) {
+        endParen = i;
+        break;
+      }
+    }
+  }
+
+  if (endParen === -1) return { params: [], minArgs: 0 };
+  const rawParams = decl.slice(openParen + 1, endParen).trim();
+  if (!rawParams) return { params: [], minArgs: 0 };
+
+  const paramStrings: string[] = [];
+  let current = "";
+  let pDepth = 0;
+  for (let i = 0; i < rawParams.length; i++) {
+    const ch = rawParams[i];
+    if (ch === "{" || ch === "[" || ch === "(" || ch === "<") pDepth++;
+    else if (ch === "}" || ch === "]" || ch === ")" || ch === ">") pDepth--;
+    else if (ch === "," && pDepth === 0) {
+      if (current.trim()) paramStrings.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) paramStrings.push(current.trim());
+
+  const params: ParsedParam[] = [];
+  let minArgs = 0;
+  let seenOptional = false;
+
+  for (const p of paramStrings) {
+    const hasDefault = p.includes("=");
+    const isRest = p.trim().startsWith("...");
+    const isMarkedOptional = /^\w+\?\s*:/.test(p.trim()) || hasDefault || isRest;
+
+    const nameMatch = p.trim().match(/^(\.{3})?([A-Za-z_$][\w$]*)/);
+    const name = nameMatch ? nameMatch[2] : p.trim();
+
+    if (!isMarkedOptional && !seenOptional) {
+      minArgs++;
+    } else {
+      seenOptional = true;
+    }
+
+    params.push({
+      name,
+      isOptional: isMarkedOptional,
+      hasDefault,
+    });
+  }
+
+  return { params, minArgs };
+}
+
+/**
+ * Extract arguments passed to a function call in a single line or code snippet.
+ */
+export function extractCallArguments(lineOrSnippet: string, symbolName: string): string[] {
+  const symIdx = lineOrSnippet.indexOf(symbolName);
+  if (symIdx === -1) return [];
+
+  const openParen = lineOrSnippet.indexOf("(", symIdx + symbolName.length);
+  if (openParen === -1) return [];
+
+  let depth = 0;
+  let endParen = -1;
+  for (let i = openParen; i < lineOrSnippet.length; i++) {
+    const ch = lineOrSnippet[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) {
+        endParen = i;
+        break;
+      }
+    }
+  }
+
+  if (endParen === -1) return [];
+  const argsRaw = lineOrSnippet.slice(openParen + 1, endParen).trim();
+  if (!argsRaw) return [];
+
+  const args: string[] = [];
+  let current = "";
+  let pDepth = 0;
+  for (let i = 0; i < argsRaw.length; i++) {
+    const ch = argsRaw[i];
+    if (ch === "{" || ch === "[" || ch === "(") pDepth++;
+    else if (ch === "}" || ch === "]" || ch === ")") pDepth--;
+    else if (ch === "," && pDepth === 0) {
+      if (current.trim()) args.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) args.push(current.trim());
+  return args;
+}
+
+/**
+ * Parse properties out of an interface or type declaration body.
+ */
+export function parseInterfaceProperties(decl: string): Set<string> {
+  const props = new Set<string>();
+  const openBrace = decl.indexOf("{");
+  const closeBrace = decl.lastIndexOf("}");
+  if (openBrace === -1 || closeBrace === -1 || closeBrace <= openBrace) return props;
+
+  const body = decl.slice(openBrace + 1, closeBrace);
+  const propRe = /(?:^|[;,{\n])\s*(?:readonly\s+)?([A-Za-z_$][\w$]*)\s*\??\s*[:=]/g;
+  let m: RegExpExecArray | null;
+  while ((m = propRe.exec(body)) !== null) {
+    if (m[1] && !["export", "function", "class", "interface", "type", "return"].includes(m[1])) {
+      props.add(m[1]);
+    }
+  }
+  return props;
+}
+
+/**
+ * Scan an external repository for concrete call-sites/usages of an exported symbol.
+ */
+export function findConsumerCallSites(
+  externalRepoPath: string,
+  repoSlug: string,
+  symbolName: string
+): ConsumerCallSite[] {
+  const callSites: ConsumerCallSite[] = [];
+  const files = collectSourceFiles(externalRepoPath, MAX_FILES_PER_REPO);
+  const regex = new RegExp(`\\b${escapeRegExp(symbolName)}\\b`);
+
+  for (const filePath of files) {
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, "utf-8");
+    } catch {
+      continue;
+    }
+
+    if (!regex.test(content)) continue;
+
+    const lines = content.split("\n");
+    const relFile = path.relative(externalRepoPath, filePath);
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (regex.test(line)) {
+        const trimmed = line.trim();
+        // Skip comment lines
+        if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+          continue;
+        }
+
+        // Skip purely import/export statement lines that do not execute a call
+        if (/^\s*(?:import|export)\b/.test(line) && !line.includes("(")) {
+          continue;
+        }
+
+        const argsPassed = extractCallArguments(line, symbolName);
+        const argsCount = argsPassed.length;
+
+        const contextLines: string[] = [];
+        if (i > 0) contextLines.push(`${i}: ${lines[i - 1]}`);
+        contextLines.push(`${i + 1}: ${line}`);
+        if (i < lines.length - 1) contextLines.push(`${i + 2}: ${lines[i + 1]}`);
+
+        callSites.push({
+          repoSlug,
+          filePath: relFile,
+          lineNumber: i + 1,
+          lineText: line.trim(),
+          argsPassed,
+          argsCount,
+          surroundingContext: contextLines.join("\n"),
+        });
+
+        if (callSites.length >= 10) break;
+      }
+    }
+  }
+
+  return callSites;
+}
+
+/**
+ * Scan diff patches for exported symbols that were modified (not deleted) in this PR.
+ * Captures signature changes, added required parameters, and removed interface properties.
+ */
+function findModifiedExportsFromDiff(
+  diff: DiffContext,
+  prExportIndex: Map<string, ExternalExport[]>,
+  repoPath: string
+): ModifiedExportInfo[] {
+  const modified: ModifiedExportInfo[] = [];
+
+  for (const file of diff.changedFiles) {
+    if (!file.patch) continue;
+
+    const lines = file.patch.split("\n");
+    let currentNewLine = 0;
+
+    const deletedDecls = new Map<string, { decl: string; line: number }>();
+    const addedDecls = new Map<string, { decl: string; line: number }>();
+
+    for (const line of lines) {
+      if (line.startsWith("@@")) {
+        const match = line.match(/@@\s+-\d+(?:,\d+)?\s+\+(\d+)/);
+        if (match) currentNewLine = parseInt(match[1], 10) - 1;
+        continue;
+      }
+
+      if (line.startsWith("-")) {
+        const text = line.slice(1).trim();
+        const symMatch = text.match(
+          /^export\s+(?:declare\s+)?(?:const|let|var|function|class|type|interface|enum|abstract\s+class)\s+(\w+)/
+        );
+        if (symMatch) {
+          deletedDecls.set(symMatch[1], { decl: text, line: currentNewLine });
+        }
+      } else if (line.startsWith("+")) {
+        currentNewLine++;
+        const text = line.slice(1).trim();
+        const symMatch = text.match(
+          /^export\s+(?:declare\s+)?(?:const|let|var|function|class|type|interface|enum|abstract\s+class)\s+(\w+)/
+        );
+        if (symMatch) {
+          addedDecls.set(symMatch[1], { decl: text, line: currentNewLine });
+        }
+      } else {
+        currentNewLine++;
+      }
+    }
+
+    // Compare symbols that were modified in this file
+    for (const [sym, oldInfo] of deletedDecls.entries()) {
+      if (!prExportIndex.has(sym)) continue; // completely removed — handled separately
+
+      const currentExports = prExportIndex.get(sym) || [];
+      const matchingCurrent = currentExports.find((e) => e.filePath === file.filename) || currentExports[0];
+      const newDecl = addedDecls.get(sym)?.decl || matchingCurrent?.declaration || "";
+      const lineNum = addedDecls.get(sym)?.line || oldInfo.line;
+
+      const isFunc = /\bfunction\b|\b=>\b/.test(oldInfo.decl) || /\bfunction\b|\b=>\b/.test(newDecl);
+      const isInterface = /\binterface\b|\btype\b/.test(oldInfo.decl) || /\binterface\b|\btype\b/.test(newDecl);
+
+      let oldMinArgs: number | undefined;
+      let newMinArgs: number | undefined;
+      let removedProperties: string[] | undefined;
+
+      if (isFunc) {
+        const oldParsed = parseFunctionParams(oldInfo.decl);
+        const newParsed = parseFunctionParams(newDecl);
+        oldMinArgs = oldParsed.minArgs;
+        newMinArgs = newParsed.minArgs;
+      }
+
+      if (isInterface) {
+        const oldProps = parseInterfaceProperties(oldInfo.decl);
+        const newProps = parseInterfaceProperties(newDecl);
+        const rem: string[] = [];
+        for (const p of oldProps) {
+          if (!newProps.has(p)) rem.push(p);
+        }
+        if (rem.length > 0) removedProperties = rem;
+      }
+
+      modified.push({
+        symbol: sym,
+        file: file.filename,
+        line: lineNum,
+        kind: isFunc ? "function" : isInterface ? "interface" : "variable",
+        oldDeclaration: oldInfo.decl,
+        newDeclaration: newDecl,
+        oldMinArgs,
+        newMinArgs,
+        removedProperties,
+      });
+    }
+
+    // Also detect property removals inside interfaces/types when the declaration line itself wasn't changed
+    for (const [sym, exps] of prExportIndex.entries()) {
+      if (deletedDecls.has(sym)) continue;
+      const exp = exps.find((e) => e.filePath === file.filename);
+      if (!exp || (exp.exportType !== "type" && !exp.declaration.includes("interface"))) continue;
+
+      const removedPropsInFile: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith("-") && !line.startsWith("---")) {
+          const propMatch = line.slice(1).match(/^\s*(?:readonly\s+)?([A-Za-z_$][\w$]*)\s*\??\s*[:=]/);
+          if (propMatch && !["export", "function", "class", "interface", "type"].includes(propMatch[1])) {
+            removedPropsInFile.push(propMatch[1]);
+          }
+        }
+      }
+
+      if (removedPropsInFile.length > 0) {
+        modified.push({
+          symbol: sym,
+          file: file.filename,
+          line: 1,
+          kind: "interface",
+          oldDeclaration: exp.declaration,
+          newDeclaration: exp.declaration,
+          removedProperties: removedPropsInFile,
+        });
+      }
+    }
+  }
+
+  return modified;
+}
+
+/**
  * Find the 1-indexed line number in a file where an imported symbol appears.
  */
 function findImportLineNumber(fullFilePath: string, symbol: string): number | null {
@@ -436,11 +803,11 @@ function findImportLineNumber(fullFilePath: string, symbol: string): number | nu
 /**
  * Analyze cross-repo dependencies by checking import/export compatibility in both directions:
  * 1. PR imports from external repo (verified against external repo's actual exports)
- * 2. External repo consumes PR repo exports (breaking change detection if PR removes exports)
+ * 2. External repo consumes PR repo exports (breaking change detection for deletions AND signature/contract modifications)
  *
  * @param clonedRepos  Successfully cloned external repos
  * @param prRepoPath   Path to the locally cloned PR repo
- * @param diff         Optional PR diff context for detecting deleted exports
+ * @param diff         Optional PR diff context for detecting deleted or modified exports
  * @returns            Analysis results with deterministic findings and context
  */
 export function analyzeMultiRepoDependencies(
@@ -459,6 +826,7 @@ export function analyzeMultiRepoDependencies(
   // Cache PR export index once for performance across all external repo checks
   const prExportIndex = buildExportIndex(prRepoPath);
   const removedExports = diff ? findRemovedExportsFromDiff(diff) : [];
+  const modifiedExports = diff ? findModifiedExportsFromDiff(diff, prExportIndex, prRepoPath) : [];
 
   for (const cloned of clonedRepos) {
     if (!cloned.success) {
@@ -548,11 +916,13 @@ export function analyzeMultiRepoDependencies(
       }
 
       // 5. Detect breaking changes in exports consumed by external repo ("and vice versa")
+      const externalFiles = collectSourceFiles(cloned.localPath, MAX_FILES_PER_REPO);
+      const allConsumerCallSites: ConsumerCallSite[] = [];
+
+      // 5a. Detect completely removed exports that external repo consumes
       if (removedExports.length > 0) {
-        const externalFiles = collectSourceFiles(cloned.localPath, MAX_FILES_PER_REPO);
         for (const rem of removedExports) {
           if (!prExportIndex.has(rem.symbol)) {
-            // Check if any external file uses this removed symbol
             let isConsumed = consumed.includes(rem.symbol);
             if (!isConsumed) {
               for (const extFile of externalFiles) {
@@ -570,14 +940,14 @@ export function analyzeMultiRepoDependencies(
             if (isConsumed) {
               const locationLabel = rem.line ? `${rem.file} · line ${rem.line}` : rem.file;
               const finding: FindingCard = {
-                id: `P1-XREPO-${allFindings.length + repoFindings.length + 1}`,
+                id: `P1-XREPO-BREAKING-${allFindings.length + repoFindings.length + 1}`,
                 severity: "P1",
                 title: `Breaking change: export "${rem.symbol}" consumed by ${dep.repoSlug} was removed`,
                 file: locationLabel,
                 filePath: rem.file,
                 line: rem.line,
                 rootCause:
-                  `The PR removes or modifies exported symbol "${rem.symbol}" in ${rem.file}, ` +
+                  `The PR removes exported symbol "${rem.symbol}" in ${rem.file}, ` +
                   `which is actively consumed by external repository ${dep.repoSlug}. ` +
                   `This is a downstream breaking change that will break builds or runtime flows in that repository.`,
                 impact:
@@ -589,6 +959,108 @@ export function analyzeMultiRepoDependencies(
               };
               repoFindings.push(finding);
               console.log(`     ⚠️   Downstream breaking change detected: "${rem.symbol}" consumed by ${dep.repoSlug}`);
+            }
+          }
+        }
+      }
+
+      // 5b. Detect MODIFIED exports with breaking changes (signature change, added required params, removed interface fields)
+      if (modifiedExports.length > 0) {
+        for (const mod of modifiedExports) {
+          const callSites = findConsumerCallSites(cloned.localPath, dep.repoSlug, mod.symbol);
+          const hasPropsToCheck = !!(mod.removedProperties && mod.removedProperties.length > 0);
+
+          if (callSites.length > 0 || hasPropsToCheck) {
+            if (callSites.length > 0) {
+              allConsumerCallSites.push(...callSites);
+            }
+            if (!consumed.includes(mod.symbol)) {
+              consumed.push(mod.symbol);
+            }
+
+            // Check for Parameter Arity Incompatibility (added required parameter)
+            if (
+              callSites.length > 0 &&
+              mod.newMinArgs !== undefined &&
+              mod.oldMinArgs !== undefined &&
+              mod.newMinArgs > mod.oldMinArgs
+            ) {
+              const breakingCallSite = callSites.find((cs) => cs.argsCount < mod.newMinArgs!);
+              if (breakingCallSite) {
+                const locationLabel = mod.line ? `${mod.file} · line ${mod.line}` : mod.file;
+                const finding: FindingCard = {
+                  id: `P1-XREPO-BREAKING-${allFindings.length + repoFindings.length + 1}`,
+                  severity: "P1",
+                  title: `Breaking change: export "${mod.symbol}" modified, breaking consumer ${dep.repoSlug}`,
+                  file: locationLabel,
+                  filePath: mod.file,
+                  line: mod.line,
+                  rootCause:
+                    `The PR modifies exported function "${mod.symbol}" in ${mod.file} by adding required parameter(s) ` +
+                    `(now requires ${mod.newMinArgs} argument(s), previously ${mod.oldMinArgs}), but downstream consumer ` +
+                    `${dep.repoSlug} calls "${mod.symbol}" with only ${breakingCallSite.argsCount} argument(s) at ` +
+                    `${breakingCallSite.filePath}:${breakingCallSite.lineNumber} ("${breakingCallSite.lineText}").`,
+                  impact:
+                    `Merging this PR will break compilation (TS2554) or cause runtime argument errors in downstream ` +
+                    `consumer repository ${dep.repoSlug}.`,
+                  fix:
+                    `Make newly added parameter(s) optional (e.g. "${mod.symbol}(..., param?: type)") with a default fallback value, ` +
+                    `or provide a backward-compatible overload so existing callers passing ${breakingCallSite.argsCount} argument(s) remain unbroken.`,
+                };
+                repoFindings.push(finding);
+                console.log(
+                  `     ⚠️   Downstream breaking signature change detected: "${mod.symbol}" consumed by ${dep.repoSlug} ` +
+                  `(requires ${mod.newMinArgs} args, caller passes ${breakingCallSite.argsCount})`
+                );
+              }
+            }
+
+            // Check for Removed/Renamed Property Incompatibility on interfaces or types
+            if (mod.removedProperties && mod.removedProperties.length > 0) {
+              for (const remProp of mod.removedProperties) {
+                // Check all external files that import or reference this symbol
+                let foundBreakingPropertyAccess = false;
+                for (const extFile of externalFiles) {
+                  if (foundBreakingPropertyAccess) break;
+                  try {
+                    const content = fs.readFileSync(extFile, "utf-8");
+                    if (!new RegExp(`\\b${escapeRegExp(mod.symbol)}\\b`).test(content)) continue;
+
+                    const extLines = content.split("\n");
+                    const propRegex = new RegExp(`(?:\\.${escapeRegExp(remProp)}\\b|\\b${escapeRegExp(remProp)}\\s*:)`);
+
+                    for (let lineIdx = 0; lineIdx < extLines.length; lineIdx++) {
+                      const l = extLines[lineIdx];
+                      if (propRegex.test(l)) {
+                        const relFile = path.relative(cloned.localPath, extFile);
+                        const locationLabel = mod.line ? `${mod.file} · line ${mod.line}` : mod.file;
+                        const finding: FindingCard = {
+                          id: `P1-XREPO-BREAKING-${allFindings.length + repoFindings.length + 1}`,
+                          severity: "P1",
+                          title: `Breaking change: property "${remProp}" removed from "${mod.symbol}", breaking consumer ${dep.repoSlug}`,
+                          file: locationLabel,
+                          filePath: mod.file,
+                          line: mod.line,
+                          rootCause:
+                            `The PR removes property "${remProp}" from exported type/interface "${mod.symbol}" in ${mod.file}, ` +
+                            `but downstream consumer ${dep.repoSlug} accesses this property at ` +
+                            `${relFile}:${lineIdx + 1} ("${l.trim()}").`,
+                          impact:
+                            `Downstream consumer ${dep.repoSlug} will fail TypeScript compilation (TS2339) or produce runtime undefined errors.`,
+                          fix:
+                            `Retain "${remProp}" as an optional/deprecated property on "${mod.symbol}", or coordinate a synchronized migration release with ${dep.repoSlug}.`,
+                        };
+                        repoFindings.push(finding);
+                        console.log(
+                          `     ⚠️   Downstream breaking type change detected: property "${remProp}" on "${mod.symbol}" consumed by ${dep.repoSlug} at ${relFile}:${lineIdx + 1}`
+                        );
+                        foundBreakingPropertyAccess = true;
+                        break;
+                      }
+                    }
+                  } catch {}
+                }
+              }
             }
           }
         }
@@ -609,6 +1081,14 @@ export function analyzeMultiRepoDependencies(
 
         if (consumed.length > 0) {
           snippetParts.push(`**Consumed from PR repo:** ${consumed.join(", ")}`);
+        }
+
+        // Include concrete consumer call-sites for modified/consumed exports
+        if (allConsumerCallSites.length > 0) {
+          snippetParts.push(`\n**Downstream consumer call-sites in ${dep.repoSlug}:**`);
+          for (const cs of allConsumerCallSites.slice(0, 8)) {
+            snippetParts.push(`- \`${cs.filePath}:${cs.lineNumber}\`: \`${cs.lineText}\``);
+          }
         }
 
         // Include the relevant export declarations for context

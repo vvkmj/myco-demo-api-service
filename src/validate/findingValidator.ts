@@ -65,6 +65,7 @@ Your job is to determine — for each finding below — whether it is a real bug
 5. UNCERTAIN = you cannot definitively confirm or deny without runtime information.
 6. Merge-blocking = this bug, if real, would cause a crash, data loss, security issue, or broken contract in production.
 7. Be concise in Reasoning — one to three sentences max. Name the specific line or function that proves your verdict.
+8. For Downstream Breaking Change findings, check the Cross-Repository Verification Context and consumer call-sites. If the PR modifies an export in a way that breaks a downstream consumer's call-site (e.g. argument mismatch, property removal, incompatible type), CONFIRM it with Merge-blocking: yes.
 
 ---
 

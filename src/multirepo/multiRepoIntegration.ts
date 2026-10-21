@@ -90,8 +90,9 @@ function buildReviewContextSection(analysis: MultiRepoAnalysis, resolution: Mult
     }
     parts.push(``);
     parts.push(
-      `If any of these consumed exports are modified or removed in this PR, ` +
-      `it may break the above external repositories. Flag such changes as regression risks.`
+      `If any of these consumed exports are modified (e.g. changed parameters, added required arguments, ` +
+      `altered return types, removed interface properties, or modified runtime behavior) or removed in this PR, ` +
+      `it will break downstream consumer repositories. Flag any incompatible modification as a merge-blocking P1 bug.`
     );
     parts.push(``);
   }

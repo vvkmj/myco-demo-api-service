@@ -42,8 +42,10 @@ export interface ExternalRepoDependency {
   importedSymbols: string[];
   /** The files in the PR that reference this external repo. */
   referencingFiles: string[];
-  /** Whether this was auto-detected or explicitly mapped. */
-  detectionMethod: "auto-detect" | "explicit-mapping";
+  /** Whether this was auto-detected, explicitly mapped, or configured downstream consumer. */
+  detectionMethod: "auto-detect" | "explicit-mapping" | "downstream-consumer";
+  /** Direction of the dependency relationship. */
+  role?: "upstream" | "downstream" | "bidirectional";
 }
 
 /**
@@ -97,6 +99,89 @@ export function parseRepoMappings(raw: string | undefined): RepoMapping[] {
     }
   }
   return mappings;
+}
+
+/**
+ * Parse downstream consumer repositories from configuration.
+ *
+ * Supports:
+ * - Environment variables: MULTI_REPO_DOWNSTREAM, DOWNSTREAM_REPOS
+ * - JSON array of slugs: ["MyOrg/api-service", "MyOrg/web-client"]
+ * - JSON array of objects: [{"repo": "MyOrg/api-service", "branch": "main", "token": "..."}]
+ * - JSON object: {"MyOrg/api-service": "main"}
+ * - Comma-separated string: "MyOrg/api-service, MyOrg/web-client"
+ * - In-repo configuration: package.json (myco.consumers) or .myco/consumers.json
+ */
+export function parseDownstreamRepos(raw: string | undefined, repoPath?: string): RepoMapping[] {
+  const downstream: RepoMapping[] = [];
+  const seen = new Set<string>();
+
+  const add = (slug: string, branch = "", token?: string) => {
+    const trimmed = slug.trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      downstream.push({ importPrefix: "", repoSlug: trimmed, branch, token });
+    }
+  };
+
+  if (raw && raw.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item === "string") add(item);
+          else if (item && typeof item === "object" && item.repo) {
+            add(item.repo, item.branch || "", item.token);
+          }
+        }
+      } else if (typeof parsed === "object") {
+        for (const [key, val] of Object.entries(parsed)) {
+          if (typeof val === "string") add(key, val);
+          else if (val && typeof val === "object" && (val as any).repo) {
+            add((val as any).repo, (val as any).branch || "", (val as any).token);
+          } else {
+            add(key);
+          }
+        }
+      }
+    } catch {
+      // Comma-separated fallback: "org/repo1, org/repo2"
+      for (const seg of raw.split(",")) {
+        if (seg.trim()) add(seg.trim());
+      }
+    }
+  }
+
+  // Also inspect in-repo configuration if repoPath is provided
+  if (repoPath) {
+    try {
+      const pkgPath = path.join(repoPath, "package.json");
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        const consumers = pkg.myco?.consumers || pkg.myco?.downstream || pkg.consumers;
+        if (Array.isArray(consumers)) {
+          for (const c of consumers) {
+            if (typeof c === "string") add(c);
+            else if (c && c.repo) add(c.repo, c.branch || "", c.token);
+          }
+        }
+      }
+    } catch {}
+
+    try {
+      const configPath = path.join(repoPath, ".myco", "consumers.json");
+      if (fs.existsSync(configPath)) {
+        const cfg = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        const list = Array.isArray(cfg) ? cfg : cfg.consumers || cfg.downstream || [];
+        for (const c of list) {
+          if (typeof c === "string") add(c);
+          else if (c && c.repo) add(c.repo, c.branch || "", c.token);
+        }
+      }
+    } catch {}
+  }
+
+  return downstream;
 }
 
 /**
@@ -355,11 +440,18 @@ export function resolveMultiRepoDependencies(
   repoPath: string,
   mappings: RepoMapping[],
   tokens: Map<string, string>,
-  autoDetect: boolean
+  autoDetect: boolean,
+  downstreamRepos?: RepoMapping[]
 ): MultiRepoResolution {
   console.log("\n🔗  Resolving cross-repository dependencies...");
 
-  // Collect all external imports from changed files
+  // 1. Resolve explicit or auto-discovered downstream consumer repositories
+  const consumers = downstreamRepos || parseDownstreamRepos(
+    process.env.MULTI_REPO_DOWNSTREAM || process.env.DOWNSTREAM_REPOS,
+    repoPath
+  );
+
+  // 2. Collect all external imports from changed files
   const allImports: ExtractedImport[] = [];
 
   for (const changed of diff.changedFiles) {
@@ -376,12 +468,14 @@ export function resolveMultiRepoDependencies(
     }
   }
 
-  if (allImports.length === 0) {
-    console.log("  ℹ️   No external imports detected in changed files.");
+  if (allImports.length === 0 && consumers.length === 0) {
+    console.log("  ℹ️   No external imports or downstream consumer repos detected.");
     return { dependencies: [], unmappedImports: [], hasCrossRepoDeps: false };
   }
 
-  console.log(`  📦  Found ${allImports.length} external import(s) across changed files.`);
+  if (allImports.length > 0) {
+    console.log(`  📦  Found ${allImports.length} external import(s) across changed files.`);
+  }
 
   // Build auto-detected mapping from package.json
   const autoMappings = autoDetect ? readLocalPackageDeps(repoPath) : new Map<string, string>();
@@ -437,12 +531,35 @@ export function resolveMultiRepoDependencies(
     }
   }
 
+  // Add downstream consumer repos to the dependency set
+  for (const consumer of consumers) {
+    if (consumer.repoSlug === primaryRepoSlug) continue;
+    const existing = repoDepMap.get(consumer.repoSlug);
+    if (existing) {
+      existing.role = "bidirectional";
+    } else {
+      const token = consumer.token || tokens.get(consumer.repoSlug) || process.env.GITHUB_TOKEN;
+      repoDepMap.set(consumer.repoSlug, {
+        repoSlug: consumer.repoSlug,
+        repoUrl: `https://github.com/${consumer.repoSlug}`,
+        branch: consumer.branch || "",
+        token,
+        importSpecifiers: consumer.importPrefix ? [consumer.importPrefix] : [],
+        importedSymbols: [],
+        referencingFiles: [],
+        detectionMethod: "downstream-consumer",
+        role: "downstream",
+      });
+    }
+  }
+
   const dependencies = Array.from(repoDepMap.values());
 
   if (dependencies.length > 0) {
     console.log(`  ✅  Resolved ${dependencies.length} cross-repo dependency/ies:`);
     for (const dep of dependencies) {
-      console.log(`     • ${dep.repoSlug} (${dep.importSpecifiers.length} import(s), ${dep.detectionMethod})`);
+      const roleTag = dep.role ? ` [${dep.role}]` : "";
+      console.log(`     • ${dep.repoSlug} (${dep.importSpecifiers.length} import(s), ${dep.detectionMethod}${roleTag})`);
     }
   } else {
     console.log("  ℹ️   No cross-repo dependencies could be mapped to repositories.");

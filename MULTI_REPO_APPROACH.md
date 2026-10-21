@@ -149,16 +149,20 @@ This is the core intelligence that checks compatibility in **both directions**:
      ```
 
 ### Direction 2: Downstream Verification (Changes breaking external code)
-1. Myco scans partner repositories to see what functions and types they consume from your repository.
-2. It inspects your PR's diff to see what was deleted (`-export const paymentService ...`).
-3. If your PR deletes or renames an export that an external partner is actively using, it generates:
+1. **Consumer Discovery:** Myco discovers downstream partner repos via `MULTI_REPO_DOWNSTREAM`, `DOWNSTREAM_REPOS`, or `package.json` (`myco.consumers`).
+2. **Deletions & Signature Diffing:** It inspects your PR's diff for both **deletions** AND **signature/contract modifications**:
+   - **Total Removal:** A consumed export was deleted (`-export const paymentService ...`).
+   - **Signature Breaking Change (Without Export Removal):** A function export still exists, but a required parameter was added (e.g. `calculateTax(amount)` → `calculateTax(amount, currency)`). Myco checks partner repos, discovers call-sites passing fewer arguments, and blocks the PR.
+   - **Type/Interface Breaking Change:** An exported interface still exists, but a property was removed or renamed (e.g. `UserRecord.name` → `fullName`). Myco finds partner lines accessing `.name` and blocks the PR.
+3. If an incompatible change is detected, it generates merge-blocking findings:
      ```
-     [P1-XREPO-2] Breaking change: export "paymentService" consumed by MyOrg/checkout was removed
-     File: src/services/payment.ts · line 32
-     Root cause: The PR removes exported symbol "paymentService", but external repository
-     MyOrg/checkout consumes this export.
-     Impact: Merging this PR will break the build or runtime flows in MyOrg/checkout.
-     Fix: Retain backward compatibility by deprecating instead of deleting, or provide a shim.
+     [P1-XREPO-BREAKING-1] Breaking change: export "calculateTax" modified, breaking consumer MyOrg/api-service
+     File: src/tax.ts · line 12
+     Root cause: The PR modifies exported function "calculateTax" by adding required parameter(s)
+     (now requires 2 argument(s), previously 1), but downstream consumer MyOrg/api-service calls
+     "calculateTax" with only 1 argument(s) at src/routes/checkout.ts:42 ("calculateTax(order.total)").
+     Impact: Downstream repository MyOrg/api-service will fail compilation (TS2554) or crash at runtime.
+     Fix: Make the new parameter optional (e.g. "calculateTax(..., currency?: string)"), or provide an overload.
      ```
 
 ---

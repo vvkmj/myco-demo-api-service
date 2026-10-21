@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as path from "path";
 import { execFileSync } from "child_process";
 
 /**
@@ -103,7 +104,8 @@ export function cloneTargetRepo(
   const authedUrl = withAuth(repoUrl, authToken);
 
   try {
-    if (fs.existsSync(targetDir)) {
+    const hasGitSubdir = fs.existsSync(targetDir) && fs.existsSync(path.join(targetDir, ".git"));
+    if (hasGitSubdir) {
       console.log(`\n📦  Repo exists at ${targetDir} — pulling latest (${branch || "default"})...`);
       try {
         // Re-set the remote URL every time (cheap, idempotent) so a stale or
@@ -122,6 +124,10 @@ export function cloneTargetRepo(
         console.warn("⚠️   Pull failed — deleting and re-cloning...");
         fs.rmSync(targetDir, { recursive: true, force: true });
       }
+    } else if (fs.existsSync(targetDir)) {
+      // If targetDir exists but is NOT a git repo, git -C would climb up to the parent .git!
+      // Delete it so git clone can cleanly clone into it.
+      fs.rmSync(targetDir, { recursive: true, force: true });
     }
 
     console.log(`\n📦  Cloning ${redactForLog(authedUrl)} (${branch || "default"}) into ${targetDir}...`);
