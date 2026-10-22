@@ -4,35 +4,26 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
 
-# The action uses this repository's automatic token for same-repository reads,
-# review comments, and optional GitHub Issues. No GitHub App credentials are
-# required or accepted by this workflow.
 permissions:
   contents: read
   pull-requests: write
   issues: write
 
 jobs:
-  review:
-    name: Myco review
+  myco-review:
     runs-on: ubuntu-latest
     steps:
       - uses: MycoIntelligence/myco-bundled-action@v1
         with:
           pr_link: ${{ github.event.pull_request.html_url }}
-          llm_provider: ${{ vars.LLM_PROVIDER || 'openai' }}
-          api_key: ${{ secrets.LLM_API_KEY }}
-          litellm_base_url: ${{ vars.LITELLM_BASE_URL }}
-          litellm_model: ${{ vars.LITELLM_MODEL }}
-          validator_model: ${{ vars.VALIDATOR_MODEL }}
-          min_severity: ${{ vars.MYCO_MIN_SEVERITY || 'P2' }}
-          validate_findings: ${{ vars.MYCO_VALIDATE_FINDINGS || 'true' }}
-          post_github_comments: ${{ vars.MYCO_POST_COMMENTS || 'true' }}
-          ci_gate: ${{ vars.MYCO_CI_GATE || 'true' }}
-          gate_min_severity: ${{ vars.MYCO_GATE_MIN_SEVERITY || 'P1' }}
-          ticket_provider: ${{ vars.MYCO_TICKET_PROVIDER }}
-          create_tickets_for: ${{ vars.MYCO_CREATE_TICKETS_FOR || 'merge-blocking' }}
-          product_label: ${{ vars.MYCO_PRODUCT_LABEL || 'myco' }}
-          metrics_endpoint: ${{ secrets.METRICS_ENDPOINT }}
-          metrics_api_key: ${{ secrets.METRICS_API_KEY }}
+          api_key: ${{ secrets.MYCO_LLM_API_KEY }}
+          metrics_endpoint: ${{ vars.MYCO_METRICS_ENDPOINT }}
+          metrics_api_key: ${{ secrets.MYCO_METRICS_API_KEY }}
           client_id: ${{ vars.MYCO_CLIENT_ID }}
+
+          # Optional review configuration:
+          # min_severity: ${{ vars.MYCO_MIN_SEVERITY }}
+          # validate_findings: ${{ vars.MYCO_VALIDATE_FINDINGS }}
+          # post_github_comments: ${{ vars.MYCO_POST_COMMENTS }}
+          # ci_gate: ${{ vars.MYCO_CI_GATE }}
+          
