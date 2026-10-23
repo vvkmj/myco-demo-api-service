@@ -25,8 +25,8 @@ export interface CommitSummary {
 export interface DiffContext {
   owner: string;
   repo: string;
-  /** Distinguishes a PR from a tag/branch comparison. */
-  sourceType: "pr" | "compare";
+  /** Distinguishes a PR from a tag/branch comparison or local folder diff. */
+  sourceType: "pr" | "compare" | "local";
   /** PR number — only set when sourceType === "pr". */
   prNumber?: number;
   /** Human-readable title. For compare: "Tag diff: base...head". */
@@ -81,7 +81,7 @@ function makeHeaders(token?: string): Record<string, string> {
  * This lets the LLM cite exact line numbers without having to count from @@ headers,
  * which is the root cause of incorrect line numbers in findings and inline PR comments.
  */
-function annotatePatchWithLineNumbers(patch: string): string {
+export function annotatePatchWithLineNumbers(patch: string): string {
   const lines = patch.split("\n");
   const annotated: string[] = [];
   let newLine = 0;
@@ -125,7 +125,7 @@ function annotatePatchWithLineNumbers(patch: string): string {
  * Cap each file patch at 8 000 chars to keep context manageable
  * while preserving meaningful diff content.
  */
-function buildDiffSummary(files: ChangedFile[]): string {
+export function buildDiffSummary(files: ChangedFile[]): string {
   const lines: string[] = [];
   for (const f of files) {
     lines.push(
@@ -333,6 +333,25 @@ export function formatDiffContext(ctx: DiffContext): string {
 
 ### Description
 ${ctx.description || "_No description provided._"}
+
+### Changed Files (${ctx.changedFiles.length})
+${fileList}
+
+### Diff
+${ctx.diffSummary}
+`;
+  }
+
+  if (ctx.sourceType === "local") {
+    return `## Local Folder Changes: ${ctx.title}
+
+**Folder / Repo:** ${ctx.owner}/${ctx.repo}
+**Author:** ${ctx.author ?? "local"}
+**Branch:** \`${ctx.headRef}\` (base: \`${ctx.baseRef}\`)
+**Labels:** ${labelStr}
+
+### Description
+${ctx.description || "_Local working tree changes._"}
 
 ### Changed Files (${ctx.changedFiles.length})
 ${fileList}

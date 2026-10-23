@@ -186,5 +186,13 @@ export function deriveSparseFolders(
     const javaRoot = filename.match(/^(.*(?:^|\/)src\/(?:main|test)\/java)(?:\/|$)/);
     if (javaRoot) folders.add(javaRoot[1]);
   }
+
+  // Include standard documentation, specification, and Jira ticket folders
+  // so requirement context is checked out and available locally for review.
+  const reqDirs = ["docs", "doc", "specs", "spec", "requirements", "jira", ".jira", ".tickets"];
+  for (const rd of reqDirs) {
+    folders.add(rd);
+  }
+
   return Array.from(folders);
 }

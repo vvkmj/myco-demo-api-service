@@ -30,6 +30,8 @@ import {
   promoteXRepoFindings,
   ClonedExternalRepo,
 } from "./multirepo";
+import { isLocalFolder, readLocalFolderDiff } from "./repo/localFolderReader";
+import { buildRequirementContext } from "./requirements";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -59,7 +61,12 @@ function requireEnv(name: string): string {
 async function main() {
   console.log("\n🤖  Myco PR Reviewer — Senior SDET\n");
 
-  const inputUrl  = requireEnv("PR_LINK");
+  const targetFolderEnv = process.env.TARGET_FOLDER || process.env.FOLDER_PATH;
+  const inputUrl = process.env.PR_LINK || targetFolderEnv;
+  if (!inputUrl) {
+    console.error("❌  Missing PR_LINK or TARGET_FOLDER environment variable.");
+    process.exit(1);
+  }
   requireEnv("METRICS_ENDPOINT");
   requireEnv("METRICS_API_KEY");
   requireEnv("CLIENT_ID");
@@ -70,12 +77,22 @@ async function main() {
   // ── 1. LLM client (provider selected via LLM_PROVIDER — "openai" default) ──
   const claude = createLLMClient();
 
-  // ── 2. Fetch diff from GitHub (PR or compare URL) ────────────────────────
+  // ── 2. Fetch diff (PR, compare URL, or local folder) ────────────────────
   let diff;
+  const isLocal = isLocalFolder(inputUrl);
   try {
-    diff = await fetchDiffContext(inputUrl);
+    if (isLocal) {
+      console.log(`📁  Local folder mode active — reading changes from "${inputUrl}"...`);
+      diff = await readLocalFolderDiff(inputUrl, {
+        baseRef: process.env.TARGET_BASE_REF,
+      });
+    } else {
+      diff = await fetchDiffContext(inputUrl);
+    }
     const label = diff.sourceType === "pr"
       ? `PR #${diff.prNumber} — "${diff.title}"`
+      : diff.sourceType === "local"
+      ? `Local folder: "${diff.repo}" (${diff.title})`
       : `Compare ${diff.baseRef}...${diff.headRef}`;
     console.log(`✅  Fetched: "${label}" (${diff.changedFiles.length} files changed)`);
     console.log(
@@ -109,22 +126,30 @@ async function main() {
     }
   }
 
-  // ── 3. Clone / pull target repo ──────────────────────────────────────────
-  // AUTO-DERIVE: if TARGET_REPO is not set, default to the repo the PR belongs to.
-  // TARGET_BRANCH defaults to the PR's head branch so the clone reflects the PR's changes.
-  const repoUrl  = process.env.TARGET_REPO
-    || `https://github.com/${diff.owner}/${diff.repo}`;
-  const branch   = process.env.TARGET_BRANCH
-    || (diff.sourceType === "pr" ? diff.headRef : diff.baseRef);
-  const repoPath = process.env.TARGET_REPO_PATH || "./target-repo";
+  // ── 3. Clone / pull target repo (or use local folder) ────────────────────
+  let repoPath: string;
   const sparseFolders = deriveSparseFolders(diff.changedFiles.map((f) => f.filename));
 
-  // Needed for a private target repo — a plain unauthenticated clone URL
-  // only ever worked for public repos (git fails fast with a generic
-  // "could not read Username" error otherwise). withAuth() in
-  // repoManager.ts only embeds this into a github.com URL, never an
-  // arbitrary TARGET_REPO host.
-  cloneTargetRepo(repoUrl, branch, repoPath, sparseFolders, process.env.GITHUB_TOKEN);
+  if (isLocal) {
+    const cleanLocal = inputUrl.startsWith("file://") ? inputUrl.slice(7) : inputUrl.trim();
+    repoPath = path.resolve(cleanLocal);
+    console.log(`\n📂  Operating directly on local folder: ${repoPath}`);
+  } else {
+    // AUTO-DERIVE: if TARGET_REPO is not set, default to the repo the PR belongs to.
+    // TARGET_BRANCH defaults to the PR's head branch so the clone reflects the PR's changes.
+    const repoUrl  = process.env.TARGET_REPO
+      || `https://github.com/${diff.owner}/${diff.repo}`;
+    const branch   = process.env.TARGET_BRANCH
+      || (diff.sourceType === "pr" ? diff.headRef : diff.baseRef);
+    repoPath = process.env.TARGET_REPO_PATH || "./target-repo";
+
+    // Needed for a private target repo — a plain unauthenticated clone URL
+    // only ever worked for public repos (git fails fast with a generic
+    // "could not read Username" error otherwise). withAuth() in
+    // repoManager.ts only embeds this into a github.com URL, never an
+    // arbitrary TARGET_REPO host.
+    cloneTargetRepo(repoUrl, branch, repoPath, sparseFolders, process.env.GITHUB_TOKEN);
+  }
 
   // ── 3b. Resolve & Clone Multi-Repository Dependencies ───────────────────
   // Strict backward compatibility: default is disabled. MULTI_REPO_ENABLED="false"
@@ -161,6 +186,30 @@ async function main() {
     } else {
       console.log("  ℹ️   No cross-repository dependencies detected for this PR.");
     }
+  }
+
+  // ── 3c. Scan & Analyze Requirements from Docs / Jira ────────────────────
+  console.log("\n📋  Scanning folder/repo for requirements & Jira context...");
+  const reqCtx = buildRequirementContext(
+    repoPath,
+    diff.changedFiles,
+    `${diff.title}\n${diff.description || ""}`
+  );
+
+  if (reqCtx.enabled) {
+    console.log(
+      `✅  Requirements context built — ` +
+      `${reqCtx.documents.length} doc(s), ` +
+      `${reqCtx.jiraTickets.length} Jira ticket(s), ` +
+      `${reqCtx.allRequirements.length} requirement item(s).`
+    );
+    if (reqCtx.changeAnalysis.hasRequirementChanges) {
+      console.log(
+        `  ⚠️   Requirement changes detected: ${reqCtx.changeAnalysis.modifiedRequirementFiles.length} file(s) modified in diff.`
+      );
+    }
+  } else {
+    console.log("  ℹ️   No requirements or Jira specs found in folder.");
   }
 
   try {
@@ -253,6 +302,7 @@ async function main() {
       linkedContext,
       crossRepoContext: multiRepoCtx.reviewContext,
       repoPathMap: multiRepoCtx.repoPathMap,
+      requirementContext: reqCtx.promptContext,
     },
     claude
   );
@@ -347,7 +397,8 @@ async function main() {
         codeContext,
         validatorClaude,
         multiRepoCtx.repoPathMap,
-        multiRepoCtx.validatorContext
+        multiRepoCtx.validatorContext,
+        reqCtx.validatorContext
       );
 
       // A removed Java import that remains referenced is a compiler error,
