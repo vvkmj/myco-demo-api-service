@@ -39,6 +39,8 @@ export interface DiffContext {
   baseRef: string;
   /** Head branch/tag/ref. */
   headRef: string;
+  /** Head commit SHA if available. */
+  headSha?: string;
   /** PR state — undefined for compare. */
   state?: string;
   labels: string[];
@@ -203,6 +205,7 @@ async function fetchPRContext(prUrl: string): Promise<DiffContext> {
     author: pr.user?.login || "unknown",
     baseRef: pr.base?.ref || "",
     headRef: pr.head?.ref || "",
+    headSha: pr.head?.sha || "",
     state: pr.state || "open",
     labels: (pr.labels || []).map((l: any) => l.name as string),
     reviewers: [

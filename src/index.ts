@@ -32,6 +32,20 @@ import {
 } from "./multirepo";
 import { isLocalFolder, readLocalFolderDiff } from "./repo/localFolderReader";
 import { buildRequirementContext } from "./requirements";
+import {
+  fetchAllRequirements,
+  buildConnectorConfig,
+  ConnectorOrchestratorResult,
+} from "./connectors";
+import {
+  mapRequirementsToCode,
+  validateRequirements,
+  evaluateMergePolicy,
+  buildPrdReportSection,
+  buildMergePolicyConfig,
+  MergePolicyDecision,
+} from "./prd";
+import { reportPrdValidationToGitHub } from "./github/checkReporter";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -555,6 +569,49 @@ async function main() {
     }
   }
 
+  // ── 10b. PRD Validation & Merge Protection Engine ───────────────────────
+  let prdDecision: MergePolicyDecision | undefined;
+  const prdPolicyConfig = buildMergePolicyConfig();
+  const prdEnabled = prdPolicyConfig.prdValidationEnabled || process.env.PRD_VALIDATION === "true";
+
+  if (prdEnabled) {
+    console.log("\n📋  Running PRD validation & requirement compliance engine...");
+    const connectorConfig = buildConnectorConfig(repoPath);
+    const connectorResult = await fetchAllRequirements(connectorConfig);
+
+    console.log(`  📊  Retrieved ${connectorResult.allRequirements.length} requirement(s) — ${connectorResult.summary}`);
+
+    if (connectorResult.allRequirements.length > 0) {
+      const mappings = mapRequirementsToCode(connectorResult.allRequirements, diff.changedFiles);
+      const prdResults = await validateRequirements(
+        mappings,
+        diff.diffSummary,
+        repoPath,
+        codeContext,
+        claude,
+        multiRepoCtx.repoPathMap
+      );
+
+      prdDecision = evaluateMergePolicy(prdResults, connectorResult, prdPolicyConfig);
+      console.log(`\n⚖️   PRD Merge Policy Decision: ${prdDecision.result} — ${prdDecision.reason}`);
+
+      const prdReportSection = buildPrdReportSection(prdDecision, connectorResult);
+      fs.appendFileSync(outputPath, prdReportSection, "utf-8");
+
+      // Report to GitHub Checks / Commit Status / PR Comment
+      const headSha = diff.headSha || process.env.GITHUB_SHA || "";
+      await reportPrdValidationToGitHub(prdDecision, connectorResult, {
+        owner: diff.owner,
+        repo: diff.repo,
+        headSha,
+        prNumber: diff.prNumber,
+        outputDir,
+      });
+    } else {
+      console.log("  ℹ️   No requirements found across configured connectors.");
+    }
+  }
+
   // Every completed review, including clean and unvalidated reviews, creates
   // a dashboard record. Validation merely enriches the finding verdict.
   await reportMetrics(
@@ -564,6 +621,21 @@ async function main() {
   );
 
   // ── 11. CI gate ──────────────────────────────────────────────────────────
+  // Check PRD merge policy: FAIL blocks merge immediately
+  if (prdDecision && prdDecision.result === "FAIL") {
+    console.error(`\n❌  PRD Validation FAILED — Merge is blocked by policy:`);
+    console.error(`     Reason: ${prdDecision.reason}`);
+    for (const r of prdDecision.failedMandatory) {
+      console.error(`     ❌ [${r.requirement.id}] ${r.requirement.title}: ${r.missingFunctionality || r.evidence}`);
+    }
+    for (const r of prdDecision.inconclusiveMandatory) {
+      console.error(`     ⚠️  [${r.requirement.id}] (INCONCLUSIVE) ${r.requirement.title}: ${r.inconclusiveReason || "Evidence insufficient"}`);
+    }
+    console.error("\n   PR is blocked from merging by PRD Merge Policy.");
+    if (clonedRepos.length > 0) cleanupExternalRepos(clonedRepos);
+    process.exit(1);
+  }
+
   if (validateEnabled && ciGate) {
     // GATE_MIN_SEVERITY caps which severity levels can block the merge,
     // independently of MIN_SEVERITY (which controls what the LLM generates).
