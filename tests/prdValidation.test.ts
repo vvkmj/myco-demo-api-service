@@ -11,7 +11,7 @@ import {
 } from "../src/connectors/types";
 import { JiraConnector } from "../src/connectors/jiraConnector";
 import { ConfluenceConnector } from "../src/connectors/confluenceConnector";
-import { ExternalDocConnector } from "../src/connectors/externalDocConnector";
+import { ExternalDocConnector, toGoogleDocsExportUrl } from "../src/connectors/externalDocConnector";
 import { LocalRepoConnector } from "../src/connectors/localRepoConnector";
 import { fetchAllRequirements, buildConnectorConfig } from "../src/connectors/connectorRegistry";
 import { mapRequirementsToCode, RequirementMapping } from "../src/prd/requirementMapper";
@@ -76,6 +76,18 @@ async function runAllTests() {
     // Private IPs must be blocked by SSRF guards
     assert.strictEqual(localResult.requirements.length, 0);
     assert.ok(localResult.diagnostics.some(d => d.includes("blocked by SSRF guard") || d.includes("private")));
+  });
+
+  await test("ExternalDocConnector converts Google Docs URLs to export format", () => {
+    const editUrl = "https://docs.google.com/document/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit?usp=sharing";
+    const exportUrl = toGoogleDocsExportUrl(editUrl);
+    assert.strictEqual(
+      exportUrl,
+      "https://docs.google.com/document/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/export?format=txt"
+    );
+
+    const nonGdocs = "https://raw.githubusercontent.com/org/repo/main/docs/PRD.md";
+    assert.strictEqual(toGoogleDocsExportUrl(nonGdocs), null);
   });
 
   await test("LocalRepoConnector extracts NormalizedRequirements from fixtures", async () => {

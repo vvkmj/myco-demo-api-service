@@ -92,7 +92,7 @@ function stripHtml(html: string): string {
 }
 
 /** Convert a Google Docs URL to an export URL */
-function toGoogleDocsExportUrl(url: string): string | null {
+export function toGoogleDocsExportUrl(url: string): string | null {
   // Match Google Docs URLs: docs.google.com/document/d/{ID}/...
   const match = url.match(/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/);
   if (!match) return null;
