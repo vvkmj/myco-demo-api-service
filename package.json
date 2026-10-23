@@ -6,6 +6,7 @@
     "start": "ts-node src/index.ts",
     "review": "ts-node src/index.ts",
     "typecheck": "tsc --noEmit",
+    "test": "ts-node tests/prdValidation.test.ts && ts-node tests/requirements.test.ts && ts-node tests/multirepo.test.ts",
     "build": "tsc"
   },
   "dependencies": {

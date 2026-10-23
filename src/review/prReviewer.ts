@@ -21,6 +21,8 @@ export interface ReviewInput {
   crossRepoContext?: string;
   /** Map of repo slugs/prefixes to local directories for multi-repo read_file tool calls. */
   repoPathMap?: Map<string, string>;
+  /** Requirement & Jira context from folder attachments and specs. */
+  requirementContext?: string;
 }
 
 export interface ReviewOutput {
@@ -39,7 +41,7 @@ export async function reviewPR(
   input: ReviewInput,
   claude: LLMClient
 ): Promise<ReviewOutput> {
-  const { diff, diffMarkdown, repoPath, codeContext, testCoverageSummary, outputDir, minSeverity, linkedContext, crossRepoContext, repoPathMap } = input;
+  const { diff, diffMarkdown, repoPath, codeContext, testCoverageSummary, outputDir, minSeverity, linkedContext, crossRepoContext, repoPathMap, requirementContext } = input;
 
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
@@ -53,7 +55,7 @@ export async function reviewPR(
   const fileStream = fs.createWriteStream(outputPath, { encoding: "utf-8" });
   console.log(`\n🔬 Running SDET review... (streaming → ${outputPath})`);
 
-  const prompt = buildReviewPrompt(diff, diffMarkdown, codeContext, testCoverageSummary, minSeverity, linkedContext, crossRepoContext);
+  const prompt = buildReviewPrompt(diff, diffMarkdown, codeContext, testCoverageSummary, minSeverity, linkedContext, crossRepoContext, requirementContext);
   const review = await claude.generate(prompt, repoPath, fileStream, repoPathMap);
 
   if (!review || review.trim().length === 0) {
@@ -103,7 +105,8 @@ function buildReviewPrompt(
   testCoverageSummary: string,
   minSeverity?: Severity,
   linkedContext?: string,
-  crossRepoContext?: string
+  crossRepoContext?: string,
+  requirementContext?: string
 ): string {
   const hasTests = testCoverageSummary.trim().length > 0;
   const hasCodeContext = !!codeContext && codeContext.trim().length > 0;
@@ -113,9 +116,11 @@ function buildReviewPrompt(
   const header =
     diff.sourceType === "pr"
       ? `**PR #${diff.prNumber} — "${diff.title}"**\nRepo: ${diff.owner}/${diff.repo} · Branch: \`${diff.headRef}\` → \`${diff.baseRef}\``
+      : diff.sourceType === "local"
+      ? `**Local Folder Changes — "${diff.title}"**\nFolder: ${diff.owner}/${diff.repo} · \`${diff.headRef}\` (base: \`${diff.baseRef}\`)`
       : `**Tag diff — "${diff.title}"**\nRepo: ${diff.owner}/${diff.repo} · \`${diff.baseRef}\` → \`${diff.headRef}\` (${diff.commits.length} commits)`;
 
-  const inputLabel = diff.sourceType === "pr" ? "PR" : "release";
+  const inputLabel = diff.sourceType === "pr" ? "PR" : diff.sourceType === "local" ? "local changes" : "release";
   const intentSection = buildIntentSection(diff, linkedContext);
 
   return `You are a senior SDET reviewing a production ${inputLabel}. Be precise and concise — no filler prose.
@@ -128,13 +133,18 @@ ${intentSection}
 
 ---
 
-## Instructions
+${requirementContext ? `${requirementContext}\n\n---\n\n` : ""}## Instructions
 
-1. Start with the Stated Intent section above. Before looking at any code, form a one-sentence understanding of what this change is supposed to accomplish — from the PR description and, if present, the fetched linked context. If intent is unknown (empty description, no usable links), say so explicitly later rather than guessing.
+1. Start with the Stated Intent and Documented Requirements sections above. Before looking at any code, understand what this change is supposed to accomplish and what acceptance criteria apply. If intent/requirements are unknown, say so explicitly later rather than guessing.
 2. Read the diff below. Each diff line is prefixed with its absolute file line number: \`+44: added code\`, \` 44: context\`, \`-43: removed code\`. Use these numbers directly when filling in the **File:** field — do not recount from @@ headers. The code context section already includes the changed files and their direct import dependencies. Use the \`read_file\` tool only for files you cannot see yet but have specific reason to check — for example: a caller of a changed function (look for the import path in the code context or diff), a file that re-exports a changed symbol, or a sibling module in the same package. Read files by their exact path; do not guess speculatively. Prioritise callers and direct dependents over transitive dependencies.
-3. Report only bugs, regressions, and coverage gaps you can ground in the diff or a file you have actually read. Do not speculate.
+3. Report only bugs, regressions, coverage gaps, and requirement mismatches you can ground in the diff or a file you have actually read. Do not speculate.
 4. Focus on new and materially changed code paths. Do not flag pre-existing issues that this diff did not touch.
-5. Intent-alignment check (only if intent is known — see step 1): compare what the diff actually does against the stated intent. If the implementation doesn't do what was described — something promised is missing, partially done, or the diff does something materially different or additional that the description doesn't mention — raise it as its own finding card in Section 2, titled starting with "Intent mismatch:". In that card's **Root cause**, quote or closely paraphrase the specific part of the stated intent and state exactly what the diff does instead. Score its severity using the same BLOCKER/P1/P2/P3 rubric below (a mismatch that ships silently broken behavior is at least P1; a scope difference that's harmless is P3). Do not raise this finding type at all if intent was unknown per step 1 — an absent or unreadable description is not itself a finding.
+5. Requirement Compliance and Intent Checks:
+   a. **Requirement Failure / Non-compliance**: If the code violates any documented requirement, schema rule, or fails any acceptance criterion from the attached docs/jira, raise a finding titled \`Requirement mismatch: <short description>\`. In Root cause, cite the specific requirement/criterion and what the code fails to do. Score as **BLOCKER** or **P1** (Merge-blocking: yes).
+   b. **Requirement Change to Code Mismatch**: If requirements in docs/jira were modified in this change (see Requirement Change Analysis above) but the code does not implement the new requirement or retains obsolete/removed behavior, raise a finding titled \`Requirement change mismatch: <short description>\`. Score as **BLOCKER** or **P1** (Merge-blocking: yes).
+   c. **Unnecessary Changes / Scope Creep**: If the diff introduces code changes, refactoring, extra functions, or configuration alterations that are **NOT required or justified** by the attached docs/jira or stated intent, raise a finding titled \`Unnecessary change: <short description>\` or \`Scope creep: <short description>\`. In the **Fix** field, provide a concrete suggestion to remove, revert, or separate the change into another PR. Score as **P2** or **P3** (or **P1** if introducing significant regression risk).
+   d. **Intent Mismatch**: If the PR description stated an intent that is not implemented or contradicted, raise a finding titled \`Intent mismatch: <short description>\`.
+   e. **Downstream Breaking Changes (Cross-Repository)**: Review the "Cross-Repository Context" and any downstream consumer call-sites. If this PR modifies an export (e.g. adding required arguments, changing parameter types, altering return types, removing/renaming interface properties, or altering runtime semantics) that is consumed by an external repository, and that modification breaks any consumer call-site or contract, raise a finding titled \`Downstream breaking change: <short description>\`. In Root cause, cite both the changed PR code and the external consumer repo's specific file/line call-site. Score as **BLOCKER** or **P1** (Merge-blocking: yes).
 6. For each finding, complete every field of the card. No partial cards.
 
 ---

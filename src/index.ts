@@ -20,6 +20,7 @@ import { findRemovedJavaImportUses } from "./static/javaImportCheck";
 import {
   resolveMultiRepoDependencies,
   parseRepoMappings,
+  parseDownstreamRepos,
   parseRepoTokens,
   cloneExternalRepos,
   cleanupExternalRepos,
@@ -29,6 +30,22 @@ import {
   promoteXRepoFindings,
   ClonedExternalRepo,
 } from "./multirepo";
+import { isLocalFolder, readLocalFolderDiff } from "./repo/localFolderReader";
+import { buildRequirementContext } from "./requirements";
+import {
+  fetchAllRequirements,
+  buildConnectorConfig,
+  ConnectorOrchestratorResult,
+} from "./connectors";
+import {
+  mapRequirementsToCode,
+  validateRequirements,
+  evaluateMergePolicy,
+  buildPrdReportSection,
+  buildMergePolicyConfig,
+  MergePolicyDecision,
+} from "./prd";
+import { reportPrdValidationToGitHub } from "./github/checkReporter";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -58,7 +75,12 @@ function requireEnv(name: string): string {
 async function main() {
   console.log("\n🤖  Myco PR Reviewer — Senior SDET\n");
 
-  const inputUrl  = requireEnv("PR_LINK");
+  const targetFolderEnv = process.env.TARGET_FOLDER || process.env.FOLDER_PATH;
+  const inputUrl = process.env.PR_LINK || targetFolderEnv;
+  if (!inputUrl) {
+    console.error("❌  Missing PR_LINK or TARGET_FOLDER environment variable.");
+    process.exit(1);
+  }
   requireEnv("METRICS_ENDPOINT");
   requireEnv("METRICS_API_KEY");
   requireEnv("CLIENT_ID");
@@ -69,12 +91,22 @@ async function main() {
   // ── 1. LLM client (provider selected via LLM_PROVIDER — "openai" default) ──
   const claude = createLLMClient();
 
-  // ── 2. Fetch diff from GitHub (PR or compare URL) ────────────────────────
+  // ── 2. Fetch diff (PR, compare URL, or local folder) ────────────────────
   let diff;
+  const isLocal = isLocalFolder(inputUrl);
   try {
-    diff = await fetchDiffContext(inputUrl);
+    if (isLocal) {
+      console.log(`📁  Local folder mode active — reading changes from "${inputUrl}"...`);
+      diff = await readLocalFolderDiff(inputUrl, {
+        baseRef: process.env.TARGET_BASE_REF,
+      });
+    } else {
+      diff = await fetchDiffContext(inputUrl);
+    }
     const label = diff.sourceType === "pr"
       ? `PR #${diff.prNumber} — "${diff.title}"`
+      : diff.sourceType === "local"
+      ? `Local folder: "${diff.repo}" (${diff.title})`
       : `Compare ${diff.baseRef}...${diff.headRef}`;
     console.log(`✅  Fetched: "${label}" (${diff.changedFiles.length} files changed)`);
     console.log(
@@ -108,31 +140,43 @@ async function main() {
     }
   }
 
-  // ── 3. Clone / pull target repo ──────────────────────────────────────────
-  // AUTO-DERIVE: if TARGET_REPO is not set, default to the repo the PR belongs to.
-  // TARGET_BRANCH defaults to the PR's head branch so the clone reflects the PR's changes.
-  const repoUrl  = process.env.TARGET_REPO
-    || `https://github.com/${diff.owner}/${diff.repo}`;
-  const branch   = process.env.TARGET_BRANCH
-    || (diff.sourceType === "pr" ? diff.headRef : diff.baseRef);
-  const repoPath = process.env.TARGET_REPO_PATH || "./target-repo";
+  // ── 3. Clone / pull target repo (or use local folder) ────────────────────
+  let repoPath: string;
   const sparseFolders = deriveSparseFolders(diff.changedFiles.map((f) => f.filename));
 
-  // Needed for a private target repo — a plain unauthenticated clone URL
-  // only ever worked for public repos (git fails fast with a generic
-  // "could not read Username" error otherwise). withAuth() in
-  // repoManager.ts only embeds this into a github.com URL, never an
-  // arbitrary TARGET_REPO host.
-  cloneTargetRepo(repoUrl, branch, repoPath, sparseFolders, process.env.GITHUB_TOKEN);
+  if (isLocal) {
+    const cleanLocal = inputUrl.startsWith("file://") ? inputUrl.slice(7) : inputUrl.trim();
+    repoPath = path.resolve(cleanLocal);
+    console.log(`\n📂  Operating directly on local folder: ${repoPath}`);
+  } else {
+    // AUTO-DERIVE: if TARGET_REPO is not set, default to the repo the PR belongs to.
+    // TARGET_BRANCH defaults to the PR's head branch so the clone reflects the PR's changes.
+    const repoUrl  = process.env.TARGET_REPO
+      || `https://github.com/${diff.owner}/${diff.repo}`;
+    const branch   = process.env.TARGET_BRANCH
+      || (diff.sourceType === "pr" ? diff.headRef : diff.baseRef);
+    repoPath = process.env.TARGET_REPO_PATH || "./target-repo";
+
+    // Needed for a private target repo — a plain unauthenticated clone URL
+    // only ever worked for public repos (git fails fast with a generic
+    // "could not read Username" error otherwise). withAuth() in
+    // repoManager.ts only embeds this into a github.com URL, never an
+    // arbitrary TARGET_REPO host.
+    cloneTargetRepo(repoUrl, branch, repoPath, sparseFolders, process.env.GITHUB_TOKEN);
+  }
 
   // ── 3b. Resolve & Clone Multi-Repository Dependencies ───────────────────
   // Strict backward compatibility: default is disabled. MULTI_REPO_ENABLED="false"
   // explicitly overrides auto-detect or mappings.
   const multiRepoExplicitDisabled = process.env.MULTI_REPO_ENABLED === "false";
+  const hasDownstreamConfig =
+    (!!process.env.MULTI_REPO_DOWNSTREAM && process.env.MULTI_REPO_DOWNSTREAM.trim().length > 0) ||
+    (!!process.env.DOWNSTREAM_REPOS && process.env.DOWNSTREAM_REPOS.trim().length > 0);
   const multiRepoEnabled =
     !multiRepoExplicitDisabled &&
     (process.env.MULTI_REPO_ENABLED === "true" ||
-      (!!process.env.MULTI_REPO_MAP && process.env.MULTI_REPO_MAP.trim().length > 0));
+      (!!process.env.MULTI_REPO_MAP && process.env.MULTI_REPO_MAP.trim().length > 0) ||
+      hasDownstreamConfig);
 
   let clonedRepos: ClonedExternalRepo[] = [];
   let multiRepoCtx = emptyMultiRepoContext();
@@ -140,10 +184,14 @@ async function main() {
   if (multiRepoEnabled && repoPath) {
     console.log("\n🌐  Multi-repository mode active.");
     const mappings = parseRepoMappings(process.env.MULTI_REPO_MAP);
+    const downstream = parseDownstreamRepos(
+      process.env.MULTI_REPO_DOWNSTREAM || process.env.DOWNSTREAM_REPOS,
+      repoPath
+    );
     const tokens = parseRepoTokens(process.env.MULTI_REPO_TOKENS);
     const autoDetect = process.env.MULTI_REPO_AUTO_DETECT !== "false";
 
-    const resolution = resolveMultiRepoDependencies(diff, repoPath, mappings, tokens, autoDetect);
+    const resolution = resolveMultiRepoDependencies(diff, repoPath, mappings, tokens, autoDetect, downstream);
 
     if (resolution.hasCrossRepoDeps) {
       clonedRepos = cloneExternalRepos(resolution.dependencies);
@@ -152,6 +200,30 @@ async function main() {
     } else {
       console.log("  ℹ️   No cross-repository dependencies detected for this PR.");
     }
+  }
+
+  // ── 3c. Scan & Analyze Requirements from Docs / Jira ────────────────────
+  console.log("\n📋  Scanning folder/repo for requirements & Jira context...");
+  const reqCtx = buildRequirementContext(
+    repoPath,
+    diff.changedFiles,
+    `${diff.title}\n${diff.description || ""}`
+  );
+
+  if (reqCtx.enabled) {
+    console.log(
+      `✅  Requirements context built — ` +
+      `${reqCtx.documents.length} doc(s), ` +
+      `${reqCtx.jiraTickets.length} Jira ticket(s), ` +
+      `${reqCtx.allRequirements.length} requirement item(s).`
+    );
+    if (reqCtx.changeAnalysis.hasRequirementChanges) {
+      console.log(
+        `  ⚠️   Requirement changes detected: ${reqCtx.changeAnalysis.modifiedRequirementFiles.length} file(s) modified in diff.`
+      );
+    }
+  } else {
+    console.log("  ℹ️   No requirements or Jira specs found in folder.");
   }
 
   try {
@@ -244,6 +316,7 @@ async function main() {
       linkedContext,
       crossRepoContext: multiRepoCtx.reviewContext,
       repoPathMap: multiRepoCtx.repoPathMap,
+      requirementContext: reqCtx.promptContext,
     },
     claude
   );
@@ -338,7 +411,8 @@ async function main() {
         codeContext,
         validatorClaude,
         multiRepoCtx.repoPathMap,
-        multiRepoCtx.validatorContext
+        multiRepoCtx.validatorContext,
+        reqCtx.validatorContext
       );
 
       // A removed Java import that remains referenced is a compiler error,
@@ -495,6 +569,72 @@ async function main() {
     }
   }
 
+  // ── 10b. PRD Validation & Merge Protection Engine ───────────────────────
+  let prdDecision: MergePolicyDecision | undefined;
+  const prdPolicyConfig = buildMergePolicyConfig();
+  const prdEnabled = prdPolicyConfig.prdValidationEnabled || process.env.PRD_VALIDATION === "true";
+
+  if (prdEnabled) {
+    console.log("\n📋  Running PRD validation & requirement compliance engine...");
+    const connectorConfig = buildConnectorConfig(repoPath, diff.description);
+    const connectorResult = await fetchAllRequirements(connectorConfig);
+
+    console.log(`  📊  Retrieved ${connectorResult.allRequirements.length} requirement(s) — ${connectorResult.summary}`);
+
+    // Fail-closed protection: if PR explicitly specified a PRD URL but 0 requirements were extracted, block merge
+    if (
+      connectorResult.allRequirements.length === 0 &&
+      connectorConfig.externalDocUrls &&
+      connectorConfig.externalDocUrls.length > 0
+    ) {
+      console.warn("  ⚠️   Configured PRD URL(s) could not be retrieved — enforcing fail-closed merge protection.");
+      connectorResult.allRequirements.push({
+        id: "PRD-INACCESSIBLE",
+        source: "external_url",
+        title: "Inaccessible PRD Specification",
+        description: `External PRD could not be retrieved from: ${connectorConfig.externalDocUrls.join(", ")}`,
+        acceptanceCriteria: ["Document must be accessible and contain valid acceptance criteria"],
+        priority: "critical",
+        severity: "mandatory",
+        sourceUrl: connectorConfig.externalDocUrls[0],
+        traceability: [],
+        sourceKey: "PRD_URL",
+        contentExcerpt: "Configured PRD document was inaccessible, malformed, or empty.",
+      });
+      connectorResult.hasUnreachableSources = true;
+    }
+
+    if (connectorResult.allRequirements.length > 0) {
+      const mappings = mapRequirementsToCode(connectorResult.allRequirements, diff.changedFiles);
+      const prdResults = await validateRequirements(
+        mappings,
+        diff.diffSummary,
+        repoPath,
+        codeContext,
+        claude,
+        multiRepoCtx.repoPathMap
+      );
+
+      prdDecision = evaluateMergePolicy(prdResults, connectorResult, prdPolicyConfig);
+      console.log(`\n⚖️   PRD Merge Policy Decision: ${prdDecision.result} — ${prdDecision.reason}`);
+
+      const prdReportSection = buildPrdReportSection(prdDecision, connectorResult);
+      fs.appendFileSync(outputPath, prdReportSection, "utf-8");
+
+      // Report to GitHub Checks / Commit Status / PR Comment
+      const headSha = diff.headSha || process.env.GITHUB_SHA || "";
+      await reportPrdValidationToGitHub(prdDecision, connectorResult, {
+        owner: diff.owner,
+        repo: diff.repo,
+        headSha,
+        prNumber: diff.prNumber,
+        outputDir,
+      });
+    } else {
+      console.log("  ℹ️   No requirements found across configured connectors.");
+    }
+  }
+
   // Every completed review, including clean and unvalidated reviews, creates
   // a dashboard record. Validation merely enriches the finding verdict.
   await reportMetrics(
@@ -504,6 +644,21 @@ async function main() {
   );
 
   // ── 11. CI gate ──────────────────────────────────────────────────────────
+  // Check PRD merge policy: FAIL blocks merge immediately
+  if (prdDecision && prdDecision.result === "FAIL") {
+    console.error(`\n❌  PRD Validation FAILED — Merge is blocked by policy:`);
+    console.error(`     Reason: ${prdDecision.reason}`);
+    for (const r of prdDecision.failedMandatory) {
+      console.error(`     ❌ [${r.requirement.id}] ${r.requirement.title}: ${r.missingFunctionality || r.evidence}`);
+    }
+    for (const r of prdDecision.inconclusiveMandatory) {
+      console.error(`     ⚠️  [${r.requirement.id}] (INCONCLUSIVE) ${r.requirement.title}: ${r.inconclusiveReason || "Evidence insufficient"}`);
+    }
+    console.error("\n   PR is blocked from merging by PRD Merge Policy.");
+    if (clonedRepos.length > 0) cleanupExternalRepos(clonedRepos);
+    process.exit(1);
+  }
+
   if (validateEnabled && ciGate) {
     // GATE_MIN_SEVERITY caps which severity levels can block the merge,
     // independently of MIN_SEVERITY (which controls what the LLM generates).

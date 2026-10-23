@@ -39,7 +39,8 @@ function buildValidatorPrompt(
   findings: FindingCard[],
   diffMarkdown: string,
   codeContext: string | undefined,
-  crossRepoContext?: string
+  crossRepoContext?: string,
+  requirementContext?: string
 ): string {
   const findingCards = findings
     .map(
@@ -60,11 +61,14 @@ Your job is to determine — for each finding below — whether it is a real bug
 
 1. For every finding card below, produce a verdict block in the exact format specified.
 2. Read the relevant source files to ground your verdict. Do not speculate — if you cannot verify a claim without reading the file, use the read_file tool.
-3. CONFIRMED = the bug is real and present in the code as described.
+3. CONFIRMED = the bug or requirement mismatch is real and present in the code as described.
 4. FALSE_POSITIVE = the code already handles the case, or the claim is incorrect.
 5. UNCERTAIN = you cannot definitively confirm or deny without runtime information.
-6. Merge-blocking = this bug, if real, would cause a crash, data loss, security issue, or broken contract in production.
+6. Merge-blocking = this bug, if real, would cause a crash, data loss, security issue, broken contract, or fails mandatory acceptance criteria/requirements.
 7. Be concise in Reasoning — one to three sentences max. Name the specific line or function that proves your verdict.
+8. For Downstream Breaking Change findings, check the Cross-Repository Verification Context and consumer call-sites. If the PR modifies an export in a way that breaks a downstream consumer's call-site (e.g. argument mismatch, property removal, incompatible type), CONFIRM it with Merge-blocking: yes.
+9. For Requirement Mismatch / Requirement Change Mismatch findings, check against the Ground Truth Requirements section below. If the code genuinely violates acceptance criteria or misses required changes, CONFIRM it and set Merge-blocking: yes.
+10. For Unnecessary Change findings, check if the change was requested or justified by requirements. If unrequested, CONFIRM it; set Merge-blocking: yes if it introduces severe risk/instability, or Merge-blocking: no if it is a stylistic/scope suggestion.
 
 ---
 
@@ -96,8 +100,7 @@ ${findingCards}
 
 ${diffMarkdown}
 
-${crossRepoContext ? `---\n\n${crossRepoContext}\n` : ""}${hasCodeContext ? `---\n\n## Related Code Context (import graph)\n${codeContext}\n` : ""}
-
+${requirementContext ? `---\n\n${requirementContext}\n` : ""}${crossRepoContext ? `---\n\n${crossRepoContext}\n` : ""}${hasCodeContext ? `---\n\n## Related Code Context (import graph)\n${codeContext}\n` : ""}
 ---
 
 Produce the verdict blocks now.`;
@@ -171,7 +174,8 @@ export async function validateFindings(
   codeContext: string | undefined,
   claude: LLMClient,
   repoPathMap?: Map<string, string>,
-  crossRepoContext?: string
+  crossRepoContext?: string,
+  requirementContext?: string
 ): Promise<ValidatedFinding[]> {
   if (findings.length === 0) return [];
 
@@ -179,7 +183,7 @@ export async function validateFindings(
     `\n🔍  Validating ${findings.length} finding(s) against the codebase...`
   );
 
-  const prompt = buildValidatorPrompt(findings, diffMarkdown, codeContext, crossRepoContext);
+  const prompt = buildValidatorPrompt(findings, diffMarkdown, codeContext, crossRepoContext, requirementContext);
 
   // Use a separate validator model if configured, otherwise fall back to the
   // same model. We pass repoPath so the validator can use read_file tool calls.

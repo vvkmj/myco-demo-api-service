@@ -11,6 +11,7 @@ target-repo/
 
 # Runtime output
 reviews/
+reports/
 ticket-hashes.json
 findings.json
 

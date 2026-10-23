@@ -5,6 +5,7 @@ import * as os from "os";
 
 import {
   parseRepoMappings,
+  parseDownstreamRepos,
   parseRepoTokens,
   resolveMultiRepoDependencies,
 } from "../src/multirepo/multiRepoResolver";
@@ -15,6 +16,10 @@ import {
 } from "../src/multirepo/multiRepoCloner";
 import {
   analyzeMultiRepoDependencies,
+  parseFunctionParams,
+  extractCallArguments,
+  parseInterfaceProperties,
+  findConsumerCallSites,
 } from "../src/multirepo/multiRepoAnalyser";
 import {
   buildMultiRepoContext,
@@ -382,8 +387,143 @@ async function runTests() {
     assert.ok(traversal.includes("Error:"));
   });
 
-  // ── 8. Cleanup ───────────────────────────────────────────────────────────
-  console.log("\nSection 8: Fail-Safe Cleanup Hook");
+  // ── 8. Subtle Breaking Changes (Signature & Contract Changes without export removal) ──
+  console.log("\nSection 8: Subtle Breaking Changes (Signature & Contract Changes without export removal)");
+
+  test("parseDownstreamRepos correctly extracts downstream consumers from various formats", () => {
+    // Array format
+    const arr = parseDownstreamRepos(JSON.stringify(["MyOrg/consumer-a", "MyOrg/consumer-b"]));
+    assert.strictEqual(arr.length, 2);
+    assert.strictEqual(arr[0].repoSlug, "MyOrg/consumer-a");
+    assert.strictEqual(arr[1].repoSlug, "MyOrg/consumer-b");
+
+    // Comma-separated format
+    const csv = parseDownstreamRepos("MyOrg/consumer-c, MyOrg/consumer-d");
+    assert.strictEqual(csv.length, 2);
+    assert.strictEqual(csv[0].repoSlug, "MyOrg/consumer-c");
+    assert.strictEqual(csv[1].repoSlug, "MyOrg/consumer-d");
+  });
+
+  test("parseFunctionParams extracts required arguments and flags optional/default parameters", () => {
+    const f1 = parseFunctionParams("export function calculateTax(amount: number)");
+    assert.strictEqual(f1.minArgs, 1);
+    assert.strictEqual(f1.params.length, 1);
+    assert.strictEqual(f1.params[0].isOptional, false);
+
+    const f2 = parseFunctionParams("export function calculateTax(amount: number, currency: string)");
+    assert.strictEqual(f2.minArgs, 2);
+    assert.strictEqual(f2.params.length, 2);
+
+    const f3 = parseFunctionParams("export function calculateTax(amount: number, currency?: string)");
+    assert.strictEqual(f3.minArgs, 1);
+    assert.strictEqual(f3.params[1].isOptional, true);
+
+    const f4 = parseFunctionParams('export function calculateTax(amount: number, currency: string = "USD")');
+    assert.strictEqual(f4.minArgs, 1);
+    assert.strictEqual(f4.params[1].hasDefault, true);
+  });
+
+  test("extractCallArguments parses argument counts correctly", () => {
+    assert.strictEqual(extractCallArguments("const t = calculateTax(total);", "calculateTax").length, 1);
+    assert.strictEqual(extractCallArguments("const t = calculateTax(total, 'USD');", "calculateTax").length, 2);
+    assert.strictEqual(extractCallArguments("const t = calculateTax();", "calculateTax").length, 0);
+  });
+
+  test("catches subtle breaking change when PR adds required param without removing export", () => {
+    // Primary repo (shared library) exports calculateTax with 1 param initially,
+    // and PR updates file on disk to require 2 params: (amount: number, currency: string)
+    const taxFile = path.join(primaryRepoDir, "tax.ts");
+    fs.writeFileSync(
+      taxFile,
+      `export function calculateTax(amount: number, currency: string) {\n  return amount * 0.1;\n}\n`
+    );
+
+    // Downstream external consumer repo calls calculateTax with only 1 param
+    const consumerClientFile = path.join(externalRepoDir, "src", "checkout.ts");
+    fs.writeFileSync(
+      consumerClientFile,
+      `import { calculateTax } from "@shared/contracts";\nconst tax = calculateTax(100);\n`
+    );
+
+    // PR diff in primary repo: changed from 1 param to 2 params (export NOT removed!)
+    const subtleBreakingDiff: DiffContext = {
+      ...mockDiff,
+      changedFiles: [
+        {
+          filename: "tax.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: `@@ -1,3 +1,3 @@\n-export function calculateTax(amount: number) {\n+export function calculateTax(amount: number, currency: string) {\n   return amount * 0.1;`,
+        },
+      ],
+    };
+
+    const analysis = analyzeMultiRepoDependencies(clonedRepos, primaryRepoDir, subtleBreakingDiff);
+
+    // Find the breaking change finding
+    const breakingFinding = analysis.findings.find((f) =>
+      f.title.includes('Breaking change: export "calculateTax" modified')
+    );
+
+    assert.ok(breakingFinding, "Must generate breaking change finding when required parameter is added");
+    assert.strictEqual(breakingFinding?.filePath, "tax.ts");
+    assert.ok(breakingFinding?.rootCause.includes("requires 2 argument(s), previously 1"));
+    assert.ok(breakingFinding?.rootCause.includes("calls \"calculateTax\" with only 1 argument(s)"));
+    assert.ok(breakingFinding?.rootCause.includes("checkout.ts"));
+
+    // Verify finding promotion
+    const promoted = promoteXRepoFindings([breakingFinding!]);
+    assert.strictEqual(promoted[0].verdict, "CONFIRMED");
+    assert.strictEqual(promoted[0].mergeBlocking, true);
+  });
+
+  test("catches breaking change when PR removes property from an interface used downstream", () => {
+    // Primary repo modifies UserRecord: removes "email" property
+    const userTypeFile = path.join(primaryRepoDir, "user.ts");
+    fs.writeFileSync(
+      userTypeFile,
+      `export interface UserRecord {\n  id: string;\n  fullName: string;\n}\n`
+    );
+
+    // Downstream external consumer repo accesses user.email
+    const consumerUserFile = path.join(externalRepoDir, "src", "users.ts");
+    fs.writeFileSync(
+      consumerUserFile,
+      `import { UserRecord } from "@shared/contracts";\nexport function notify(u: UserRecord) {\n  return u.email;\n}\n`
+    );
+
+    const interfaceBreakingDiff: DiffContext = {
+      ...mockDiff,
+      changedFiles: [
+        {
+          filename: "user.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: `@@ -1,4 +1,4 @@\n export interface UserRecord {\n   id: string;\n-  email: string;\n+  fullName: string;\n }`,
+        },
+      ],
+    };
+
+    const analysis = analyzeMultiRepoDependencies(clonedRepos, primaryRepoDir, interfaceBreakingDiff);
+
+    const breakingFinding = analysis.findings.find((f) =>
+      f.title.includes('Breaking change: property "email" removed from "UserRecord"')
+    );
+
+    assert.ok(breakingFinding, "Must generate breaking change finding when interface property is removed");
+    assert.strictEqual(breakingFinding?.filePath, "user.ts");
+    assert.ok(breakingFinding?.rootCause.includes("accesses this property"));
+    assert.ok(breakingFinding?.rootCause.includes("users.ts"));
+
+    const promoted = promoteXRepoFindings([breakingFinding!]);
+    assert.strictEqual(promoted[0].verdict, "CONFIRMED");
+    assert.strictEqual(promoted[0].mergeBlocking, true);
+  });
+
+  // ── 9. Cleanup ───────────────────────────────────────────────────────────
+  console.log("\nSection 9: Fail-Safe Cleanup Hook");
 
   test("cleanupExternalRepos safely deletes cloned directories and prunes empty parents", () => {
     assert.strictEqual(fs.existsSync(externalRepoDir), true);

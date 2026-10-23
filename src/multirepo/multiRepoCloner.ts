@@ -69,7 +69,11 @@ export function cloneExternalRepos(
   // entries shouldn't consume all runner disk/time. The most important repos
   // are listed first (ordered by number of import references in the resolver).
   const toClone = dependencies
-    .sort((a, b) => b.importSpecifiers.length - a.importSpecifiers.length)
+    .sort((a, b) => {
+      const scoreA = a.role === "downstream" || a.role === "bidirectional" ? 100 : a.importSpecifiers.length;
+      const scoreB = b.role === "downstream" || b.role === "bidirectional" ? 100 : b.importSpecifiers.length;
+      return scoreB - scoreA;
+    })
     .slice(0, MAX_EXTERNAL_REPOS);
 
   if (toClone.length < dependencies.length) {
