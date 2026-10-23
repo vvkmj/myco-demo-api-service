@@ -6,7 +6,7 @@ import {
 } from "./types";
 import { JiraConnector } from "./jiraConnector";
 import { ConfluenceConnector } from "./confluenceConnector";
-import { ExternalDocConnector } from "./externalDocConnector";
+import { ExternalDocConnector, extractPrdUrls } from "./externalDocConnector";
 import { LocalRepoConnector } from "./localRepoConnector";
 import { GithubDocsConnector } from "./githubDocsConnector";
 
@@ -29,8 +29,14 @@ export interface ConnectorOrchestratorResult {
   allDiagnostics: string[];
 }
 
-/** Build ConnectorConfig from environment variables */
-export function buildConnectorConfig(repoPath?: string): ConnectorConfig {
+/** Build ConnectorConfig from environment variables and optional PR description */
+export function buildConnectorConfig(repoPath?: string, prDescription?: string): ConnectorConfig {
+  const prdUrlsFromDesc = prDescription ? extractPrdUrls(prDescription) : [];
+  const envUrls = process.env.PRD_URLS
+    ? process.env.PRD_URLS.split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+  const externalDocUrls = Array.from(new Set([...prdUrlsFromDesc, ...envUrls]));
+
   return {
     jiraBaseUrl: process.env.JIRA_BASE_URL,
     jiraToken: process.env.JIRA_TOKEN,
@@ -45,9 +51,7 @@ export function buildConnectorConfig(repoPath?: string): ConnectorConfig {
       ? process.env.CONFLUENCE_SPACE.split(",").map(s => s.trim()).filter(Boolean)
       : [],
     githubToken: process.env.GITHUB_TOKEN,
-    externalDocUrls: process.env.PRD_URLS
-      ? process.env.PRD_URLS.split(",").map(s => s.trim()).filter(Boolean)
-      : [],
+    externalDocUrls,
     timeoutMs: process.env.CONNECTOR_TIMEOUT_MS
       ? parseInt(process.env.CONNECTOR_TIMEOUT_MS, 10)
       : 15000,

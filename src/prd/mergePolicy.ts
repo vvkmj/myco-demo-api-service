@@ -105,8 +105,16 @@ export function evaluateMergePolicy(
     }
   }
 
-  // Rule 3: FAIL on missing credentials causing INCONCLUSIVE
+  // Rule 3: FAIL on missing credentials or unreachable sources
   const hasCredentialGaps = connectorResult.hasCredentialGaps;
+  const hasUnreachableSources = connectorResult.hasUnreachableSources;
+
+  if (hasUnreachableSources) {
+    policyBreakdown.push(
+      `🌐 One or more configured PRD / requirement sources were unreachable or failed to load.`
+    );
+  }
+
   if (config.failOnMissingCredentials && hasCredentialGaps) {
     policyBreakdown.push(
       `🔒 Missing credentials prevented validation of some requirements. ` +
@@ -138,6 +146,9 @@ export function evaluateMergePolicy(
   if (failedMandatory.length > 0) {
     result = "FAIL";
     reason = `${failedMandatory.length} mandatory requirement(s) failed validation.`;
+  } else if (hasUnreachableSources) {
+    result = "FAIL";
+    reason = `Configured PRD / requirement source was unreachable or failed to load.`;
   } else if (config.failOnInconclusive && inconclusiveMandatory.length > 0) {
     result = "FAIL";
     reason = `${inconclusiveMandatory.length} mandatory requirement(s) could not be validated (INCONCLUSIVE).`;

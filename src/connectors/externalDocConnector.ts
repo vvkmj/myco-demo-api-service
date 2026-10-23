@@ -99,8 +99,36 @@ export function toGoogleDocsExportUrl(url: string): string | null {
   return `https://docs.google.com/document/d/${match[1]}/export?format=txt`;
 }
 
+/** Extract PRD URLs from text (such as PR description or commit message) */
+export function extractPrdUrls(text: string): string[] {
+  if (!text) return [];
+  const urls: string[] = [];
+
+  // Match: PRD: <url> or PRD: url (case-insensitive)
+  const pattern = /\bPRD:\s*(?:<([^>]+)>|([^\s\r\n]+))/gi;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const rawUrl = (match[1] || match[2] || "").trim();
+    if (rawUrl && /^https?:\/\//i.test(rawUrl)) {
+      const cleanUrl = rawUrl.replace(/[),;.]+$/, "");
+      urls.push(cleanUrl);
+    }
+  }
+
+  // Also match markdown link: [PRD](url)
+  const mdPattern = /\[(?:PRD|Spec|Requirements)\]\((https?:\/\/[^\s)]+)\)/gi;
+  while ((match = mdPattern.exec(text)) !== null) {
+    const rawUrl = match[1].trim();
+    if (rawUrl && !urls.includes(rawUrl)) {
+      urls.push(rawUrl);
+    }
+  }
+
+  return Array.from(new Set(urls));
+}
+
 /** Extract acceptance criteria from document text */
-function extractAcceptanceCriteria(text: string): string[] {
+export function extractAcceptanceCriteria(text: string): string[] {
   const criteria: string[] = [];
   const lines = text.split("\n");
   let inAcSection = false;
@@ -119,8 +147,8 @@ function extractAcceptanceCriteria(text: string): string[] {
       criteria.push(checkboxMatch[1].trim());
       continue;
     }
-    if (inAcSection && /^[-*•\d+.]\s+(.+)$/.test(trimmed)) {
-      const item = trimmed.replace(/^[-*•\d+.]\s+/, "").trim();
+    if (inAcSection && /^[-*•\d+.]\s*(.+)$/.test(trimmed)) {
+      const item = trimmed.replace(/^[-*•\s]+/, "").replace(/^\d+[.)]\s*/, "").trim();
       if (item.length > 5) criteria.push(item);
     }
   }
@@ -177,10 +205,15 @@ export class ExternalDocConnector implements RequirementConnector {
       }
     }
 
+    const hasUrls = allUrls.length > 0;
+    const fetchFailed = hasUrls && requirements.length === 0;
+
     return {
       source: this.source,
       requirements,
-      success: true,
+      success: !fetchFailed,
+      sourceUnreachable: fetchFailed,
+      error: fetchFailed ? "Failed to retrieve requirements from configured external document URL(s)" : undefined,
       diagnostics,
     };
   }

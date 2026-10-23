@@ -11,7 +11,7 @@ import {
 } from "../src/connectors/types";
 import { JiraConnector } from "../src/connectors/jiraConnector";
 import { ConfluenceConnector } from "../src/connectors/confluenceConnector";
-import { ExternalDocConnector, toGoogleDocsExportUrl } from "../src/connectors/externalDocConnector";
+import { ExternalDocConnector, toGoogleDocsExportUrl, extractPrdUrls } from "../src/connectors/externalDocConnector";
 import { LocalRepoConnector } from "../src/connectors/localRepoConnector";
 import { fetchAllRequirements, buildConnectorConfig } from "../src/connectors/connectorRegistry";
 import { mapRequirementsToCode, RequirementMapping } from "../src/prd/requirementMapper";
@@ -88,6 +88,28 @@ async function runAllTests() {
 
     const nonGdocs = "https://raw.githubusercontent.com/org/repo/main/docs/PRD.md";
     assert.strictEqual(toGoogleDocsExportUrl(nonGdocs), null);
+  });
+
+  await test("extractPrdUrls parses PRD: <url> and PRD: url from PR description text", () => {
+    const desc = `
+## Summary
+This PR implements user registration.
+
+PRD: https://docs.google.com/document/d/1064e2XSZysXR9JvcJfkn_r1wCYdDPPwm1qhY4mi8G4Q/edit
+Related: PRD: <https://example.com/spec-2>
+Markdown style: [PRD](https://example.com/spec-3)
+`;
+    const urls = extractPrdUrls(desc);
+    assert.strictEqual(urls.length, 3);
+    assert.ok(urls.includes("https://docs.google.com/document/d/1064e2XSZysXR9JvcJfkn_r1wCYdDPPwm1qhY4mi8G4Q/edit"));
+    assert.ok(urls.includes("https://example.com/spec-2"));
+    assert.ok(urls.includes("https://example.com/spec-3"));
+  });
+
+  await test("buildConnectorConfig incorporates PRD URLs from PR description", () => {
+    const desc = "Feature implementation\n\nPRD: https://docs.google.com/document/d/12345/edit";
+    const config = buildConnectorConfig("/tmp", desc);
+    assert.ok(config.externalDocUrls?.includes("https://docs.google.com/document/d/12345/edit"));
   });
 
   await test("LocalRepoConnector extracts NormalizedRequirements from fixtures", async () => {

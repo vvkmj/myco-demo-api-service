@@ -101,7 +101,7 @@ Your task: For each requirement below, determine whether the PR implementation s
 ## Instructions
 
 1. For every requirement card below, produce a validation block in the exact format specified.
-2. Read the diff and relevant source files to ground your assessment. Use the \`read_file\` tool for files you need to inspect.
+2. Read the diff and relevant source files to ground your assessment.
 3. **PASS** = sufficient evidence shows the requirement is satisfied by the code in this PR.
 4. **FAIL** = evidence shows the implementation violates or does not implement a mandatory requirement.
 5. **INCONCLUSIVE** = evidence is insufficient, the requirement may be implemented in code not visible in this PR, or validation could not be completed.
@@ -155,14 +155,15 @@ function parseValidationResponse(
     const req = mapping.requirement;
     const id = escapeRegex(req.id);
 
-    // Match the validation block for this requirement
+    // Match the validation block for this requirement:
+    // Support formats: [REQ-ID], **[REQ-ID]**, **REQ-ID**, or criteria sub-blocks (R1, R2, etc.)
     const blockPattern = new RegExp(
-      `\\[${id}\\]\\s*\\n` +
-      `Status:\\s*(PASS|FAIL|INCONCLUSIVE)\\s*\\n` +
-      `Evidence:\\s*([\\s\\S]+?)\\n` +
+      `(?:\\*\\*|\\[)?(?:${id})(?:\\*\\*|\\])?[\\s:]*\\n+` +
+      `Status:\\s*(PASS|FAIL|INCONCLUSIVE)\\s*\\n+` +
+      `Evidence:\\s*([\\s\\S]+?)\\n+` +
       `Code-locations:\\s*([^\\n]*)` +
-      `(?:\\nMissing:\\s*([^\\n]*))?` +
-      `(?:\\nInconclusive-reason:\\s*([^\\n]*))?`,
+      `(?:\\n+Missing:\\s*([^\\n]*))?` +
+      `(?:\\n+Inconclusive-reason:\\s*([^\\n]*))?`,
       "i"
     );
 
@@ -182,15 +183,36 @@ function parseValidationResponse(
         inconclusiveReason: inconclusiveReason?.trim() || undefined,
       });
     } else {
-      // LLM didn't produce a block for this requirement — INCONCLUSIVE
-      console.warn(`  ⚠️   No validation block parsed for [${req.id}] — defaulting to INCONCLUSIVE`);
-      results.push({
-        requirement: req,
-        status: "INCONCLUSIVE",
-        evidence: "Validator did not produce a validation block for this requirement.",
-        codeLocations: mapping.affectedCodeFiles,
-        inconclusiveReason: "LLM validator output did not include this requirement.",
-      });
+      // Check for criteria sub-blocks (e.g. **[R1]**, **R1**, [R1], etc.)
+      const subBlockPattern = /(?:\*\*\[|\*\*|\[)?(R\d+|REQ-[A-Za-z0-9_-]+|CRIT-\d+)(?:\]\*\*|\*\*|\])?[\s:]*\n+Status:\s*(PASS|FAIL|INCONCLUSIVE)\s*\n+Evidence:\s*([\s\S]+?)\n+Code-locations:\s*([^\n]*)(?:\n+Missing:\s*([^\n]*))?/gi;
+      const subMatches = [...raw.matchAll(subBlockPattern)];
+      if (subMatches.length > 0) {
+        const statuses = subMatches.map(m => m[2].toUpperCase() as ValidationStatus);
+        const hasFail = statuses.includes("FAIL");
+        const hasInc = statuses.includes("INCONCLUSIVE");
+        const overallStatus: ValidationStatus = hasFail ? "FAIL" : hasInc ? "INCONCLUSIVE" : "PASS";
+        const combinedEvidence = subMatches.map(m => `[${m[1]}] ${m[3].trim()}`).join(" | ");
+        const allCodeLocations = subMatches.flatMap(m => m[4].split(",").map(s => s.trim()).filter(Boolean));
+        const missingItems = subMatches.filter(m => m[5]?.trim()).map(m => `[${m[1]}] ${m[5]?.trim()}`).join("; ");
+
+        results.push({
+          requirement: req,
+          status: overallStatus,
+          evidence: combinedEvidence,
+          codeLocations: Array.from(new Set(allCodeLocations)),
+          missingFunctionality: missingItems || undefined,
+        });
+      } else {
+        // LLM didn't produce a block for this requirement — INCONCLUSIVE
+        console.warn(`  ⚠️   No validation block parsed for [${req.id}] — defaulting to INCONCLUSIVE`);
+        results.push({
+          requirement: req,
+          status: "INCONCLUSIVE",
+          evidence: "Validator did not produce a validation block for this requirement.",
+          codeLocations: mapping.affectedCodeFiles,
+          inconclusiveReason: "LLM validator output did not include this requirement.",
+        });
+      }
     }
   }
 

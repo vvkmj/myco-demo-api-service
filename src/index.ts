@@ -576,10 +576,33 @@ async function main() {
 
   if (prdEnabled) {
     console.log("\n📋  Running PRD validation & requirement compliance engine...");
-    const connectorConfig = buildConnectorConfig(repoPath);
+    const connectorConfig = buildConnectorConfig(repoPath, diff.description);
     const connectorResult = await fetchAllRequirements(connectorConfig);
 
     console.log(`  📊  Retrieved ${connectorResult.allRequirements.length} requirement(s) — ${connectorResult.summary}`);
+
+    // Fail-closed protection: if PR explicitly specified a PRD URL but 0 requirements were extracted, block merge
+    if (
+      connectorResult.allRequirements.length === 0 &&
+      connectorConfig.externalDocUrls &&
+      connectorConfig.externalDocUrls.length > 0
+    ) {
+      console.warn("  ⚠️   Configured PRD URL(s) could not be retrieved — enforcing fail-closed merge protection.");
+      connectorResult.allRequirements.push({
+        id: "PRD-INACCESSIBLE",
+        source: "external_url",
+        title: "Inaccessible PRD Specification",
+        description: `External PRD could not be retrieved from: ${connectorConfig.externalDocUrls.join(", ")}`,
+        acceptanceCriteria: ["Document must be accessible and contain valid acceptance criteria"],
+        priority: "critical",
+        severity: "mandatory",
+        sourceUrl: connectorConfig.externalDocUrls[0],
+        traceability: [],
+        sourceKey: "PRD_URL",
+        contentExcerpt: "Configured PRD document was inaccessible, malformed, or empty.",
+      });
+      connectorResult.hasUnreachableSources = true;
+    }
 
     if (connectorResult.allRequirements.length > 0) {
       const mappings = mapRequirementsToCode(connectorResult.allRequirements, diff.changedFiles);
