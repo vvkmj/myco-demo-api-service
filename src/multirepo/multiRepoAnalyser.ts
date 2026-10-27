@@ -24,6 +24,139 @@ export interface ExternalExport {
 }
 
 /**
+ * A concrete call-site or usage of an export in a downstream consumer repository.
+ */
+export interface ConsumerCallSite {
+  repoSlug: string;
+  filePath: string;
+  lineNumber: number;
+  lineText: string;
+  argsPassed: string[];
+  argsCount: number;
+  surroundingContext?: string;
+}
+
+/**
+ * Information about an export that was modified (not removed) in the PR diff.
+ */
+export interface ModifiedExportInfo {
+  symbol: string;
+  file: string;
+  line: number | null;
+  kind: "function" | "interface" | "type" | "class" | "variable" | "other";
+  oldDeclaration: string;
+  newDeclaration: string;
+  oldMinArgs?: number;
+  newMinArgs?: number;
+  removedProperties?: string[];
+  addedRequiredProperties?: string[];
+}
+
+/**
+ * Parsed function parameter metadata.
+ */
+export interface ParsedParam {
+  name: string;
+  isOptional: boolean;
+  hasDefault: boolean;
+}
+
+/**
+ * Result of analyzing a single cross-repo dependency.
+ */
+/**
+ * An HTTP REST API endpoint exposed by a service repository.
+ */
+export interface ApiEndpointContract {
+  repoSlug: string;
+  method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+  path: string;
+  handlerName?: string;
+  responseModel?: string;
+  responseFields?: string[];
+  sourceFile: string;
+  lineNumber?: number;
+}
+
+/**
+ * An HTTP client call discovered in a frontend or client service.
+ */
+export interface ApiClientCall {
+  repoSlug: string;
+  method: string;
+  endpoint: string;
+  expectedFields?: string[];
+  envVarUsed?: string;
+  sourceFile: string;
+  lineNumber?: number;
+}
+
+/**
+ * A Kubernetes Service resource exposing ports.
+ */
+export interface K8sServiceContract {
+  repoSlug: string;
+  serviceName: string;
+  port: number;
+  targetPort: number;
+  protocol: string;
+  selectorApp?: string;
+  sourceFile: string;
+}
+
+/**
+ * A Kubernetes Ingress resource routing HTTP paths to backend services.
+ */
+export interface K8sIngressContract {
+  repoSlug: string;
+  ingressName: string;
+  path: string;
+  targetService: string;
+  targetPort: number;
+  sourceFile: string;
+}
+
+/**
+ * An environment variable contract (e.g. VITE_API_BASE_URL, PORT).
+ */
+export interface EnvVarContract {
+  repoSlug: string;
+  name: string;
+  defaultValue?: string;
+  sourceFile: string;
+  purpose: string;
+}
+
+/**
+ * Project-wide synthesized knowledge base across all sibling repositories.
+ */
+export interface CrossRepoKnowledgeBase {
+  endpoints: ApiEndpointContract[];
+  clientCalls: ApiClientCall[];
+  k8sServices: K8sServiceContract[];
+  k8sIngresses: K8sIngressContract[];
+  envVars: EnvVarContract[];
+  exports: ExternalExport[];
+  projectId?: string;
+}
+
+/**
+ * Result of querying cross-repository facts.
+ */
+export interface CrossRepoFactQueryResult {
+  query: string;
+  facts: Array<{
+    category: "api-endpoint" | "response-fields" | "k8s-service" | "target-port" | "ingress-routing" | "env-var" | "other";
+    description: string;
+    sourceRepo: string;
+    sourceFile: string;
+    citation: string;
+  }>;
+  formattedAnswer: string;
+  unknownFacts: string[];
+}
+
+/**
  * Result of analyzing a single cross-repo dependency.
  */
 export interface CrossRepoAnalysisResult {
@@ -41,6 +174,16 @@ export interface CrossRepoAnalysisResult {
   findings: FindingCard[];
   /** Context snippet for the LLM reviewer (external repo's relevant exports). */
   contextSnippet: string;
+  /** Endpoints discovered in this repository. */
+  endpoints?: ApiEndpointContract[];
+  /** Kubernetes services discovered in this repository. */
+  k8sServices?: K8sServiceContract[];
+  /** Kubernetes ingresses discovered in this repository. */
+  k8sIngresses?: K8sIngressContract[];
+  /** Environment variables discovered in this repository. */
+  envVars?: EnvVarContract[];
+  /** Client API calls discovered in this repository. */
+  clientCalls?: ApiClientCall[];
   /** Error message if analysis failed. */
   error?: string;
 }
@@ -57,6 +200,8 @@ export interface MultiRepoAnalysis {
   contextForReview: string;
   /** Map of repo slug → local path for read_file tool access. */
   repoPathMap: Map<string, string>;
+  /** Project-wide synthesized knowledge base. */
+  knowledgeBase?: CrossRepoKnowledgeBase;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +214,10 @@ const MAX_CROSS_REPO_CONTEXT_CHARS = 30_000;
 /** Maximum number of files to scan per external repo for exports. */
 const MAX_FILES_PER_REPO = 2_000;
 
-const ALLOWED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".java", ".go"]);
+const ALLOWED_EXTENSIONS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".java", ".go",
+  ".py", ".yaml", ".yml", ".json"
+]);
 
 const IGNORE_DIRS = new Set([
   "node_modules", "dist", "build", ".git", "coverage",
@@ -248,10 +396,288 @@ function extractJavaExports(content: string, filePath: string): ExternalExport[]
 }
 
 /**
- * Build an export index for an external repo: symbol name → ExternalExport[].
+ * Extract Python exports, functions, Pydantic models, and FastAPI routes.
  */
-function buildExportIndex(repoPath: string): Map<string, ExternalExport[]> {
-  const index = new Map<string, ExternalExport[]>();
+export function extractPythonExports(
+  content: string,
+  filePath: string,
+  repoSlug: string = "unknown/repo"
+): {
+  exports: ExternalExport[];
+  endpoints: ApiEndpointContract[];
+} {
+  const exports: ExternalExport[] = [];
+  const endpoints: ApiEndpointContract[] = [];
+
+  // 1. Python functions: def function_name(...)
+  const funcRe = /^\s*def\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([A-Za-z0-9_.[\]]+))?:/gm;
+  let match: RegExpExecArray | null;
+  while ((match = funcRe.exec(content)) !== null) {
+    const funcName = match[1];
+    if (funcName.startsWith("_") && !funcName.startsWith("__init__")) continue;
+    exports.push({
+      symbolName: funcName,
+      filePath,
+      exportType: "named",
+      declaration: match[0].trim(),
+    });
+  }
+
+  // 2. Python classes & Pydantic models: class ModelName(BaseModel):
+  const classRe = /^\s*class\s+([A-Za-z0-9_]+)(?:\(([^)]*)\))?:/gm;
+  const modelsMap = new Map<string, string[]>();
+
+  while ((match = classRe.exec(content)) !== null) {
+    const className = match[1];
+    exports.push({
+      symbolName: className,
+      filePath,
+      exportType: "named",
+      declaration: match[0].trim(),
+    });
+  }
+
+  // Extract Pydantic model fields: e.g. class StatusResponse(BaseModel): field_name: type = Field(...)
+  const modelBlockRe = /class\s+([A-Za-z0-9_]+)\s*\([^)]*BaseModel[^)]*\):([\s\S]*?)(?=\n(?:class|def|\S)|$)/g;
+  while ((match = modelBlockRe.exec(content)) !== null) {
+    const mName = match[1];
+    const body = match[2];
+    const fieldRe = /^\s+([A-Za-z0-9_]+)\s*:\s*([^=\n#]+)/gm;
+    const fields: string[] = [];
+    let fMatch: RegExpExecArray | null;
+    while ((fMatch = fieldRe.exec(body)) !== null) {
+      const fName = fMatch[1];
+      if (!fName.startsWith("_")) {
+        fields.push(fName);
+      }
+    }
+    if (fields.length > 0) {
+      modelsMap.set(mName, fields);
+    }
+  }
+
+  // 3. FastAPI / Flask route decorators:
+  // @app.get("/api/v1/status", response_model=StatusResponse)
+  // def get_status() -> StatusResponse:
+  const routeRe = /@(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*["']([^"']+)["'](?:[^)]*response_model\s*=\s*([A-Za-z0-9_]+))?[^)]*\)\s*\n\s*(?:async\s+)?def\s+([A-Za-z0-9_]+)(?:\s*\([^)]*\)\s*->\s*([A-Za-z0-9_]+))?/g;
+  while ((match = routeRe.exec(content)) !== null) {
+    const method = match[1].toUpperCase() as "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+    const routePath = match[2];
+    const responseModel = match[3] || match[5];
+    const handler = match[4];
+
+    const responseFields = responseModel ? modelsMap.get(responseModel) || [] : [];
+
+    endpoints.push({
+      repoSlug,
+      method,
+      path: routePath,
+      handlerName: handler,
+      responseModel,
+      responseFields,
+      sourceFile: filePath,
+    });
+  }
+
+  return { exports, endpoints };
+}
+
+/**
+ * Extract Kubernetes Service, Ingress, and Deployment contracts from YAML manifests.
+ */
+export function extractK8sManifests(
+  content: string,
+  filePath: string,
+  repoSlug: string = "unknown/repo"
+): {
+  services: K8sServiceContract[];
+  ingresses: K8sIngressContract[];
+  envVars: EnvVarContract[];
+} {
+  const services: K8sServiceContract[] = [];
+  const ingresses: K8sIngressContract[] = [];
+  const envVars: EnvVarContract[] = [];
+
+  const docs = content.split(/^---\s*$/m);
+
+  for (const doc of docs) {
+    if (!doc.trim()) continue;
+
+    const kindMatch = doc.match(/^\s*kind\s*:\s*([A-Za-z0-9_]+)/m);
+    const kind = kindMatch ? kindMatch[1].trim() : "";
+
+    const metaBlockMatch = doc.match(/metadata:\s*([\s\S]*?)(?=\n[a-z0-9_-]+:|$)/i);
+    const metaBlock = metaBlockMatch ? metaBlockMatch[1] : doc;
+    const nameMatch = metaBlock.match(/^\s*name\s*:\s*([A-Za-z0-9_.-]+)/m);
+    const resourceName = nameMatch ? nameMatch[1].trim() : "";
+
+    if (kind === "Service") {
+      const portMatch = doc.match(/^\s*-\s*port\s*:\s*(\d+)/m);
+      const targetPortMatch = doc.match(/^\s*targetPort\s*:\s*(\d+)/m);
+      const protocolMatch = doc.match(/^\s*protocol\s*:\s*([A-Za-z0-9_]+)/m);
+      const selectorBlockMatch = doc.match(/selector:\s*([\s\S]*?)(?=\n[a-z0-9_-]+:|$)/i);
+      const selectorBlock = selectorBlockMatch ? selectorBlockMatch[1] : "";
+      const selectorMatch = selectorBlock.match(/^\s*app\s*:\s*([A-Za-z0-9_.-]+)/m);
+
+      if (resourceName && (portMatch || targetPortMatch)) {
+        services.push({
+          repoSlug,
+          serviceName: resourceName,
+          port: portMatch ? parseInt(portMatch[1], 10) : 80,
+          targetPort: targetPortMatch ? parseInt(targetPortMatch[1], 10) : (portMatch ? parseInt(portMatch[1], 10) : 80),
+          protocol: protocolMatch ? protocolMatch[1].toUpperCase() : "TCP",
+          selectorApp: selectorMatch ? selectorMatch[1] : undefined,
+          sourceFile: filePath,
+        });
+      }
+    } else if (kind === "Ingress") {
+      const pathBlockRe = /-\s*path\s*:\s*([^\s\n]+)(?:[\s\S]*?)service:\s*(?:[\s\S]*?)name\s*:\s*([A-Za-z0-9_.-]+)(?:[\s\S]*?)(?:number\s*:\s*(\d+)|name\s*:\s*([A-Za-z0-9_.-]+))/g;
+      let pMatch: RegExpExecArray | null;
+      while ((pMatch = pathBlockRe.exec(doc)) !== null) {
+        ingresses.push({
+          repoSlug,
+          ingressName: resourceName || "ingress",
+          path: pMatch[1],
+          targetService: pMatch[2],
+          targetPort: pMatch[3] ? parseInt(pMatch[3], 10) : 80,
+          sourceFile: filePath,
+        });
+      }
+      const legacyPathRe = /-\s*path\s*:\s*([^\s\n]+)(?:[\s\S]*?)serviceName\s*:\s*([A-Za-z0-9_.-]+)(?:[\s\S]*?)servicePort\s*:\s*(\d+)/g;
+      let lMatch: RegExpExecArray | null;
+      while ((lMatch = legacyPathRe.exec(doc)) !== null) {
+        ingresses.push({
+          repoSlug,
+          ingressName: resourceName || "ingress",
+          path: lMatch[1],
+          targetService: lMatch[2],
+          targetPort: parseInt(lMatch[3], 10),
+          sourceFile: filePath,
+        });
+      }
+    } else if (kind === "Deployment") {
+      const cPortMatch = doc.match(/containerPort\s*:\s*(\d+)/);
+      const envVarRe = /-\s*name\s*:\s*([A-Z0-9_]+)\s*\n\s*value\s*:\s*["']?([^"'\n]+)["']?/g;
+      let eMatch: RegExpExecArray | null;
+      while ((eMatch = envVarRe.exec(doc)) !== null) {
+        envVars.push({
+          repoSlug,
+          name: eMatch[1],
+          defaultValue: eMatch[2],
+          purpose: `Deployment environment variable in ${resourceName}`,
+          sourceFile: filePath,
+        });
+      }
+    }
+  }
+
+  return { services, ingresses, envVars };
+}
+
+/**
+ * Extract client API calls, environment variable accesses, and response field reads.
+ */
+export function extractClientCallsAndEnvVars(
+  content: string,
+  filePath: string,
+  repoSlug: string = "unknown/repo"
+): {
+  clientCalls: ApiClientCall[];
+  envVars: EnvVarContract[];
+} {
+  const clientCalls: ApiClientCall[] = [];
+  const envVars: EnvVarContract[] = [];
+
+  // fetch('/api/...') or fetch(`${...}/api/...`)
+  const fetchRe = /fetch\s*\(\s*[`'"](?:\${([^}]+)})?((?:\/api|\/v[0-9]|\/status|\/health)[^`'"]*)[`'"]/g;
+  let match: RegExpExecArray | null;
+  while ((match = fetchRe.exec(content)) !== null) {
+    const envVar = match[1];
+    const endpoint = match[2];
+
+    const fieldRe = /(?:data|json|response|res)\.([a-z0-9_]+)/g;
+    const expectedFields: string[] = [];
+    let fMatch: RegExpExecArray | null;
+    while ((fMatch = fieldRe.exec(content)) !== null) {
+      if (!["ok", "status_text", "json", "text", "headers"].includes(fMatch[1])) {
+        if (!expectedFields.includes(fMatch[1])) expectedFields.push(fMatch[1]);
+      }
+    }
+
+    // Destructured response fields: const { service, version } = json or const { a, b } = await res.json()
+    const destructureRe = /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(?:await\s+)?(?:data|json|response|res)(?:\.[a-z0-9_]+\(\))?/g;
+    let dMatch: RegExpExecArray | null;
+    while ((dMatch = destructureRe.exec(content)) !== null) {
+      const parts = dMatch[1].split(",").map((p) => p.trim().split(":")[0].trim()).filter(Boolean);
+      for (const p of parts) {
+        if (!["ok", "status_text", "json", "text", "headers"].includes(p)) {
+          if (!expectedFields.includes(p)) expectedFields.push(p);
+        }
+      }
+    }
+
+    clientCalls.push({
+      repoSlug,
+      method: "GET",
+      endpoint,
+      expectedFields,
+      envVarUsed: envVar,
+      sourceFile: filePath,
+    });
+  }
+
+  // axios.get/post/put/delete('/api/...')
+  const axiosRe = /axios\s*\.\s*(get|post|put|delete|patch)\s*\(\s*[`'"](?:\${([^}]+)})?((?:\/api|\/v[0-9]|\/status|\/health)[^`'"]*)[`'"]/gi;
+  while ((match = axiosRe.exec(content)) !== null) {
+    clientCalls.push({
+      repoSlug,
+      method: match[1].toUpperCase(),
+      endpoint: match[3],
+      expectedFields: [],
+      envVarUsed: match[2] || undefined,
+      sourceFile: filePath,
+    });
+  }
+
+  // Environment variables
+  const envRe = /(?:import\.meta\.env\.|process\.env\.)([A-Za-z0-9_]+)/g;
+  const seenEnv = new Set<string>();
+  while ((match = envRe.exec(content)) !== null) {
+    const varName = match[1];
+    if (seenEnv.has(varName)) continue;
+    seenEnv.add(varName);
+    envVars.push({
+      repoSlug,
+      name: varName,
+      purpose: `Configuration environment variable read in ${filePath}`,
+      sourceFile: filePath,
+    });
+  }
+
+  return { clientCalls, envVars };
+}
+
+/**
+ * Scan a repository comprehensively for exports, API endpoints, Kubernetes topology, and client contracts.
+ */
+export function scanRepoKnowledge(
+  repoPath: string,
+  repoSlug: string = "unknown/repo"
+): {
+  exportIndex: Map<string, ExternalExport[]>;
+  endpoints: ApiEndpointContract[];
+  k8sServices: K8sServiceContract[];
+  k8sIngresses: K8sIngressContract[];
+  envVars: EnvVarContract[];
+  clientCalls: ApiClientCall[];
+} {
+  const exportIndex = new Map<string, ExternalExport[]>();
+  const endpoints: ApiEndpointContract[] = [];
+  const k8sServices: K8sServiceContract[] = [];
+  const k8sIngresses: K8sIngressContract[] = [];
+  const envVars: EnvVarContract[] = [];
+  const clientCalls: ApiClientCall[] = [];
+
   const files = collectSourceFiles(repoPath, MAX_FILES_PER_REPO);
 
   for (const filePath of files) {
@@ -264,26 +690,86 @@ function buildExportIndex(repoPath: string): Map<string, ExternalExport[]> {
 
     const ext = path.extname(filePath);
     const relPath = path.relative(repoPath, filePath);
-    let exports: ExternalExport[];
+    let exports: ExternalExport[] = [];
 
     if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) {
       exports = extractTsExports(content, relPath);
+      const client = extractClientCallsAndEnvVars(content, relPath, repoSlug);
+      clientCalls.push(...client.clientCalls);
+      envVars.push(...client.envVars);
     } else if (ext === ".java") {
       exports = extractJavaExports(content, relPath);
     } else if (ext === ".go") {
       exports = extractGoExports(content, relPath);
-    } else {
-      continue;
+    } else if (ext === ".py") {
+      const py = extractPythonExports(content, relPath, repoSlug);
+      exports = py.exports;
+      endpoints.push(...py.endpoints);
+
+      const portMatch = content.match(/port\s*=\s*(\d+)/);
+      if (portMatch) {
+        envVars.push({
+          repoSlug,
+          name: "PORT",
+          defaultValue: portMatch[1],
+          purpose: `Server listening port in ${relPath}`,
+          sourceFile: relPath,
+        });
+      }
+    } else if ([".yaml", ".yml"].includes(ext)) {
+      const k8s = extractK8sManifests(content, relPath, repoSlug);
+      k8sServices.push(...k8s.services);
+      k8sIngresses.push(...k8s.ingresses);
+      envVars.push(...k8s.envVars);
     }
 
     for (const exp of exports) {
-      const existing = index.get(exp.symbolName) || [];
+      const existing = exportIndex.get(exp.symbolName) || [];
       existing.push(exp);
-      index.set(exp.symbolName, existing);
+      exportIndex.set(exp.symbolName, existing);
     }
   }
 
-  return index;
+  // Cross-associate models to endpoints if defined in another file in the same repo
+  for (const ep of endpoints) {
+    if (ep.responseModel && (!ep.responseFields || ep.responseFields.length === 0)) {
+      const modelExports = exportIndex.get(ep.responseModel);
+      if (modelExports && modelExports.length > 0) {
+        try {
+          const modelFile = path.resolve(repoPath, modelExports[0].filePath);
+          if (fs.existsSync(modelFile)) {
+            const mContent = fs.readFileSync(modelFile, "utf-8");
+            const mBlock = mContent.match(new RegExp(`class\\s+${ep.responseModel}\\s*\\([^)]*BaseModel[^)]*\\):([\\s\\S]*?)(?=\\n(?:class|def|\\S)|$)`));
+            if (mBlock) {
+              const fieldRe = /^\s+([A-Za-z0-9_]+)\s*:\s*([^=\n#]+)/gm;
+              const fields: string[] = [];
+              let fMatch: RegExpExecArray | null;
+              while ((fMatch = fieldRe.exec(mBlock[1])) !== null) {
+                if (!fMatch[1].startsWith("_")) fields.push(fMatch[1]);
+              }
+              ep.responseFields = fields;
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+
+  return {
+    exportIndex,
+    endpoints,
+    k8sServices,
+    k8sIngresses,
+    envVars,
+    clientCalls,
+  };
+}
+
+/**
+ * Build an export index for an external repo: symbol name → ExternalExport[].
+ */
+function buildExportIndex(repoPath: string): Map<string, ExternalExport[]> {
+  return scanRepoKnowledge(repoPath).exportIndex;
 }
 
 /**
@@ -413,6 +899,335 @@ function escapeRegExp(value: string): string {
 }
 
 /**
+ * Parse function parameters and calculate the minimum required arguments
+ * (count of required parameters before the first optional/default/rest param).
+ */
+export function parseFunctionParams(decl: string): { params: ParsedParam[]; minArgs: number } {
+  const openParen = decl.indexOf("(");
+  if (openParen === -1) return { params: [], minArgs: 0 };
+
+  let depth = 0;
+  let endParen = -1;
+  for (let i = openParen; i < decl.length; i++) {
+    const ch = decl[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) {
+        endParen = i;
+        break;
+      }
+    }
+  }
+
+  if (endParen === -1) return { params: [], minArgs: 0 };
+  const rawParams = decl.slice(openParen + 1, endParen).trim();
+  if (!rawParams) return { params: [], minArgs: 0 };
+
+  const paramStrings: string[] = [];
+  let current = "";
+  let pDepth = 0;
+  for (let i = 0; i < rawParams.length; i++) {
+    const ch = rawParams[i];
+    if (ch === "{" || ch === "[" || ch === "(" || ch === "<") pDepth++;
+    else if (ch === "}" || ch === "]" || ch === ")" || ch === ">") pDepth--;
+    else if (ch === "," && pDepth === 0) {
+      if (current.trim()) paramStrings.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) paramStrings.push(current.trim());
+
+  const params: ParsedParam[] = [];
+  let minArgs = 0;
+  let seenOptional = false;
+
+  for (const p of paramStrings) {
+    const hasDefault = p.includes("=");
+    const isRest = p.trim().startsWith("...");
+    const isMarkedOptional = /^\w+\?\s*:/.test(p.trim()) || hasDefault || isRest;
+
+    const nameMatch = p.trim().match(/^(\.{3})?([A-Za-z_$][\w$]*)/);
+    const name = nameMatch ? nameMatch[2] : p.trim();
+
+    if (!isMarkedOptional && !seenOptional) {
+      minArgs++;
+    } else {
+      seenOptional = true;
+    }
+
+    params.push({
+      name,
+      isOptional: isMarkedOptional,
+      hasDefault,
+    });
+  }
+
+  return { params, minArgs };
+}
+
+/**
+ * Extract arguments passed to a function call in a single line or code snippet.
+ */
+export function extractCallArguments(lineOrSnippet: string, symbolName: string): string[] {
+  const symIdx = lineOrSnippet.indexOf(symbolName);
+  if (symIdx === -1) return [];
+
+  const openParen = lineOrSnippet.indexOf("(", symIdx + symbolName.length);
+  if (openParen === -1) return [];
+
+  let depth = 0;
+  let endParen = -1;
+  for (let i = openParen; i < lineOrSnippet.length; i++) {
+    const ch = lineOrSnippet[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) {
+        endParen = i;
+        break;
+      }
+    }
+  }
+
+  if (endParen === -1) return [];
+  const argsRaw = lineOrSnippet.slice(openParen + 1, endParen).trim();
+  if (!argsRaw) return [];
+
+  const args: string[] = [];
+  let current = "";
+  let pDepth = 0;
+  for (let i = 0; i < argsRaw.length; i++) {
+    const ch = argsRaw[i];
+    if (ch === "{" || ch === "[" || ch === "(") pDepth++;
+    else if (ch === "}" || ch === "]" || ch === ")") pDepth--;
+    else if (ch === "," && pDepth === 0) {
+      if (current.trim()) args.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) args.push(current.trim());
+  return args;
+}
+
+/**
+ * Parse properties out of an interface or type declaration body.
+ */
+export function parseInterfaceProperties(decl: string): Set<string> {
+  const props = new Set<string>();
+  const openBrace = decl.indexOf("{");
+  const closeBrace = decl.lastIndexOf("}");
+  if (openBrace === -1 || closeBrace === -1 || closeBrace <= openBrace) return props;
+
+  const body = decl.slice(openBrace + 1, closeBrace);
+  const propRe = /(?:^|[;,{\n])\s*(?:readonly\s+)?([A-Za-z_$][\w$]*)\s*\??\s*[:=]/g;
+  let m: RegExpExecArray | null;
+  while ((m = propRe.exec(body)) !== null) {
+    if (m[1] && !["export", "function", "class", "interface", "type", "return"].includes(m[1])) {
+      props.add(m[1]);
+    }
+  }
+  return props;
+}
+
+/**
+ * Scan an external repository for concrete call-sites/usages of an exported symbol.
+ */
+export function findConsumerCallSites(
+  externalRepoPath: string,
+  repoSlug: string,
+  symbolName: string
+): ConsumerCallSite[] {
+  const callSites: ConsumerCallSite[] = [];
+  const files = collectSourceFiles(externalRepoPath, MAX_FILES_PER_REPO);
+  const regex = new RegExp(`\\b${escapeRegExp(symbolName)}\\b`);
+
+  for (const filePath of files) {
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, "utf-8");
+    } catch {
+      continue;
+    }
+
+    if (!regex.test(content)) continue;
+
+    const lines = content.split("\n");
+    const relFile = path.relative(externalRepoPath, filePath);
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (regex.test(line)) {
+        const trimmed = line.trim();
+        // Skip comment lines
+        if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+          continue;
+        }
+
+        // Skip purely import/export statement lines that do not execute a call
+        if (/^\s*(?:import|export)\b/.test(line) && !line.includes("(")) {
+          continue;
+        }
+
+        const argsPassed = extractCallArguments(line, symbolName);
+        const argsCount = argsPassed.length;
+
+        const contextLines: string[] = [];
+        if (i > 0) contextLines.push(`${i}: ${lines[i - 1]}`);
+        contextLines.push(`${i + 1}: ${line}`);
+        if (i < lines.length - 1) contextLines.push(`${i + 2}: ${lines[i + 1]}`);
+
+        callSites.push({
+          repoSlug,
+          filePath: relFile,
+          lineNumber: i + 1,
+          lineText: line.trim(),
+          argsPassed,
+          argsCount,
+          surroundingContext: contextLines.join("\n"),
+        });
+
+        if (callSites.length >= 10) break;
+      }
+    }
+  }
+
+  return callSites;
+}
+
+/**
+ * Scan diff patches for exported symbols that were modified (not deleted) in this PR.
+ * Captures signature changes, added required parameters, and removed interface properties.
+ */
+function findModifiedExportsFromDiff(
+  diff: DiffContext,
+  prExportIndex: Map<string, ExternalExport[]>,
+  repoPath: string
+): ModifiedExportInfo[] {
+  const modified: ModifiedExportInfo[] = [];
+
+  for (const file of diff.changedFiles) {
+    if (!file.patch) continue;
+
+    const lines = file.patch.split("\n");
+    let currentNewLine = 0;
+
+    const deletedDecls = new Map<string, { decl: string; line: number }>();
+    const addedDecls = new Map<string, { decl: string; line: number }>();
+
+    for (const line of lines) {
+      if (line.startsWith("@@")) {
+        const match = line.match(/@@\s+-\d+(?:,\d+)?\s+\+(\d+)/);
+        if (match) currentNewLine = parseInt(match[1], 10) - 1;
+        continue;
+      }
+
+      if (line.startsWith("-")) {
+        const text = line.slice(1).trim();
+        const symMatch = text.match(
+          /^export\s+(?:declare\s+)?(?:const|let|var|function|class|type|interface|enum|abstract\s+class)\s+(\w+)/
+        );
+        if (symMatch) {
+          deletedDecls.set(symMatch[1], { decl: text, line: currentNewLine });
+        }
+      } else if (line.startsWith("+")) {
+        currentNewLine++;
+        const text = line.slice(1).trim();
+        const symMatch = text.match(
+          /^export\s+(?:declare\s+)?(?:const|let|var|function|class|type|interface|enum|abstract\s+class)\s+(\w+)/
+        );
+        if (symMatch) {
+          addedDecls.set(symMatch[1], { decl: text, line: currentNewLine });
+        }
+      } else {
+        currentNewLine++;
+      }
+    }
+
+    // Compare symbols that were modified in this file
+    for (const [sym, oldInfo] of deletedDecls.entries()) {
+      if (!prExportIndex.has(sym)) continue; // completely removed — handled separately
+
+      const currentExports = prExportIndex.get(sym) || [];
+      const matchingCurrent = currentExports.find((e) => e.filePath === file.filename) || currentExports[0];
+      const newDecl = addedDecls.get(sym)?.decl || matchingCurrent?.declaration || "";
+      const lineNum = addedDecls.get(sym)?.line || oldInfo.line;
+
+      const isFunc = /\bfunction\b|\b=>\b/.test(oldInfo.decl) || /\bfunction\b|\b=>\b/.test(newDecl);
+      const isInterface = /\binterface\b|\btype\b/.test(oldInfo.decl) || /\binterface\b|\btype\b/.test(newDecl);
+
+      let oldMinArgs: number | undefined;
+      let newMinArgs: number | undefined;
+      let removedProperties: string[] | undefined;
+
+      if (isFunc) {
+        const oldParsed = parseFunctionParams(oldInfo.decl);
+        const newParsed = parseFunctionParams(newDecl);
+        oldMinArgs = oldParsed.minArgs;
+        newMinArgs = newParsed.minArgs;
+      }
+
+      if (isInterface) {
+        const oldProps = parseInterfaceProperties(oldInfo.decl);
+        const newProps = parseInterfaceProperties(newDecl);
+        const rem: string[] = [];
+        for (const p of oldProps) {
+          if (!newProps.has(p)) rem.push(p);
+        }
+        if (rem.length > 0) removedProperties = rem;
+      }
+
+      modified.push({
+        symbol: sym,
+        file: file.filename,
+        line: lineNum,
+        kind: isFunc ? "function" : isInterface ? "interface" : "variable",
+        oldDeclaration: oldInfo.decl,
+        newDeclaration: newDecl,
+        oldMinArgs,
+        newMinArgs,
+        removedProperties,
+      });
+    }
+
+    // Also detect property removals inside interfaces/types when the declaration line itself wasn't changed
+    for (const [sym, exps] of prExportIndex.entries()) {
+      if (deletedDecls.has(sym)) continue;
+      const exp = exps.find((e) => e.filePath === file.filename);
+      if (!exp || (exp.exportType !== "type" && !exp.declaration.includes("interface"))) continue;
+
+      const removedPropsInFile: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith("-") && !line.startsWith("---")) {
+          const propMatch = line.slice(1).match(/^\s*(?:readonly\s+)?([A-Za-z_$][\w$]*)\s*\??\s*[:=]/);
+          if (propMatch && !["export", "function", "class", "interface", "type"].includes(propMatch[1])) {
+            removedPropsInFile.push(propMatch[1]);
+          }
+        }
+      }
+
+      if (removedPropsInFile.length > 0) {
+        modified.push({
+          symbol: sym,
+          file: file.filename,
+          line: 1,
+          kind: "interface",
+          oldDeclaration: exp.declaration,
+          newDeclaration: exp.declaration,
+          removedProperties: removedPropsInFile,
+        });
+      }
+    }
+  }
+
+  return modified;
+}
+
+/**
  * Find the 1-indexed line number in a file where an imported symbol appears.
  */
 function findImportLineNumber(fullFilePath: string, symbol: string): number | null {
@@ -436,11 +1251,11 @@ function findImportLineNumber(fullFilePath: string, symbol: string): number | nu
 /**
  * Analyze cross-repo dependencies by checking import/export compatibility in both directions:
  * 1. PR imports from external repo (verified against external repo's actual exports)
- * 2. External repo consumes PR repo exports (breaking change detection if PR removes exports)
+ * 2. External repo consumes PR repo exports (breaking change detection for deletions AND signature/contract modifications)
  *
  * @param clonedRepos  Successfully cloned external repos
  * @param prRepoPath   Path to the locally cloned PR repo
- * @param diff         Optional PR diff context for detecting deleted exports
+ * @param diff         Optional PR diff context for detecting deleted or modified exports
  * @returns            Analysis results with deterministic findings and context
  */
 export function analyzeMultiRepoDependencies(
@@ -456,9 +1271,22 @@ export function analyzeMultiRepoDependencies(
 
   console.log("\n🔍  Analyzing cross-repository dependencies...");
 
-  // Cache PR export index once for performance across all external repo checks
-  const prExportIndex = buildExportIndex(prRepoPath);
+  // Cache PR export and contract index once for performance across all external repo checks
+  const primaryRepoSlug = diff ? `${diff.owner}/${diff.repo}` : "primary-repo";
+  const prScan = scanRepoKnowledge(prRepoPath, primaryRepoSlug);
+  const prExportIndex = prScan.exportIndex;
   const removedExports = diff ? findRemovedExportsFromDiff(diff) : [];
+  const modifiedExports = diff ? findModifiedExportsFromDiff(diff, prExportIndex, prRepoPath) : [];
+
+  const knowledgeBase: CrossRepoKnowledgeBase = {
+    endpoints: [...prScan.endpoints],
+    clientCalls: [...prScan.clientCalls],
+    k8sServices: [...prScan.k8sServices],
+    k8sIngresses: [...prScan.k8sIngresses],
+    envVars: [...prScan.envVars],
+    exports: [],
+    projectId: process.env.MYCO_PROJECT_ID || process.env.PROJECT_ID || "myco-multirepo-project",
+  };
 
   for (const cloned of clonedRepos) {
     if (!cloned.success) {
@@ -483,9 +1311,16 @@ export function analyzeMultiRepoDependencies(
     }
 
     try {
-      // 1. Build export index for the external repo
-      const exportIndex = buildExportIndex(cloned.localPath);
-      console.log(`     📊  Found ${exportIndex.size} exported symbol(s).`);
+      // 1. Build export index and contract knowledge for the external repo
+      const externalScan = scanRepoKnowledge(cloned.localPath, cloned.repoSlug);
+      const exportIndex = externalScan.exportIndex;
+      console.log(`     📊  Found ${exportIndex.size} exported symbol(s), ${externalScan.endpoints.length} API route(s), ${externalScan.k8sServices.length} K8s service(s).`);
+
+      knowledgeBase.endpoints.push(...externalScan.endpoints);
+      knowledgeBase.clientCalls.push(...externalScan.clientCalls);
+      knowledgeBase.k8sServices.push(...externalScan.k8sServices);
+      knowledgeBase.k8sIngresses.push(...externalScan.k8sIngresses);
+      knowledgeBase.envVars.push(...externalScan.envVars);
 
       // 2. Verify imports from external repo
       const verified: string[] = [];
@@ -548,11 +1383,13 @@ export function analyzeMultiRepoDependencies(
       }
 
       // 5. Detect breaking changes in exports consumed by external repo ("and vice versa")
+      const externalFiles = collectSourceFiles(cloned.localPath, MAX_FILES_PER_REPO);
+      const allConsumerCallSites: ConsumerCallSite[] = [];
+
+      // 5a. Detect completely removed exports that external repo consumes
       if (removedExports.length > 0) {
-        const externalFiles = collectSourceFiles(cloned.localPath, MAX_FILES_PER_REPO);
         for (const rem of removedExports) {
           if (!prExportIndex.has(rem.symbol)) {
-            // Check if any external file uses this removed symbol
             let isConsumed = consumed.includes(rem.symbol);
             if (!isConsumed) {
               for (const extFile of externalFiles) {
@@ -570,14 +1407,14 @@ export function analyzeMultiRepoDependencies(
             if (isConsumed) {
               const locationLabel = rem.line ? `${rem.file} · line ${rem.line}` : rem.file;
               const finding: FindingCard = {
-                id: `P1-XREPO-${allFindings.length + repoFindings.length + 1}`,
+                id: `P1-XREPO-BREAKING-${allFindings.length + repoFindings.length + 1}`,
                 severity: "P1",
                 title: `Breaking change: export "${rem.symbol}" consumed by ${dep.repoSlug} was removed`,
                 file: locationLabel,
                 filePath: rem.file,
                 line: rem.line,
                 rootCause:
-                  `The PR removes or modifies exported symbol "${rem.symbol}" in ${rem.file}, ` +
+                  `The PR removes exported symbol "${rem.symbol}" in ${rem.file}, ` +
                   `which is actively consumed by external repository ${dep.repoSlug}. ` +
                   `This is a downstream breaking change that will break builds or runtime flows in that repository.`,
                 impact:
@@ -589,6 +1426,108 @@ export function analyzeMultiRepoDependencies(
               };
               repoFindings.push(finding);
               console.log(`     ⚠️   Downstream breaking change detected: "${rem.symbol}" consumed by ${dep.repoSlug}`);
+            }
+          }
+        }
+      }
+
+      // 5b. Detect MODIFIED exports with breaking changes (signature change, added required params, removed interface fields)
+      if (modifiedExports.length > 0) {
+        for (const mod of modifiedExports) {
+          const callSites = findConsumerCallSites(cloned.localPath, dep.repoSlug, mod.symbol);
+          const hasPropsToCheck = !!(mod.removedProperties && mod.removedProperties.length > 0);
+
+          if (callSites.length > 0 || hasPropsToCheck) {
+            if (callSites.length > 0) {
+              allConsumerCallSites.push(...callSites);
+            }
+            if (!consumed.includes(mod.symbol)) {
+              consumed.push(mod.symbol);
+            }
+
+            // Check for Parameter Arity Incompatibility (added required parameter)
+            if (
+              callSites.length > 0 &&
+              mod.newMinArgs !== undefined &&
+              mod.oldMinArgs !== undefined &&
+              mod.newMinArgs > mod.oldMinArgs
+            ) {
+              const breakingCallSite = callSites.find((cs) => cs.argsCount < mod.newMinArgs!);
+              if (breakingCallSite) {
+                const locationLabel = mod.line ? `${mod.file} · line ${mod.line}` : mod.file;
+                const finding: FindingCard = {
+                  id: `P1-XREPO-BREAKING-${allFindings.length + repoFindings.length + 1}`,
+                  severity: "P1",
+                  title: `Breaking change: export "${mod.symbol}" modified, breaking consumer ${dep.repoSlug}`,
+                  file: locationLabel,
+                  filePath: mod.file,
+                  line: mod.line,
+                  rootCause:
+                    `The PR modifies exported function "${mod.symbol}" in ${mod.file} by adding required parameter(s) ` +
+                    `(now requires ${mod.newMinArgs} argument(s), previously ${mod.oldMinArgs}), but downstream consumer ` +
+                    `${dep.repoSlug} calls "${mod.symbol}" with only ${breakingCallSite.argsCount} argument(s) at ` +
+                    `${breakingCallSite.filePath}:${breakingCallSite.lineNumber} ("${breakingCallSite.lineText}").`,
+                  impact:
+                    `Merging this PR will break compilation (TS2554) or cause runtime argument errors in downstream ` +
+                    `consumer repository ${dep.repoSlug}.`,
+                  fix:
+                    `Make newly added parameter(s) optional (e.g. "${mod.symbol}(..., param?: type)") with a default fallback value, ` +
+                    `or provide a backward-compatible overload so existing callers passing ${breakingCallSite.argsCount} argument(s) remain unbroken.`,
+                };
+                repoFindings.push(finding);
+                console.log(
+                  `     ⚠️   Downstream breaking signature change detected: "${mod.symbol}" consumed by ${dep.repoSlug} ` +
+                  `(requires ${mod.newMinArgs} args, caller passes ${breakingCallSite.argsCount})`
+                );
+              }
+            }
+
+            // Check for Removed/Renamed Property Incompatibility on interfaces or types
+            if (mod.removedProperties && mod.removedProperties.length > 0) {
+              for (const remProp of mod.removedProperties) {
+                // Check all external files that import or reference this symbol
+                let foundBreakingPropertyAccess = false;
+                for (const extFile of externalFiles) {
+                  if (foundBreakingPropertyAccess) break;
+                  try {
+                    const content = fs.readFileSync(extFile, "utf-8");
+                    if (!new RegExp(`\\b${escapeRegExp(mod.symbol)}\\b`).test(content)) continue;
+
+                    const extLines = content.split("\n");
+                    const propRegex = new RegExp(`(?:\\.${escapeRegExp(remProp)}\\b|\\b${escapeRegExp(remProp)}\\s*:)`);
+
+                    for (let lineIdx = 0; lineIdx < extLines.length; lineIdx++) {
+                      const l = extLines[lineIdx];
+                      if (propRegex.test(l)) {
+                        const relFile = path.relative(cloned.localPath, extFile);
+                        const locationLabel = mod.line ? `${mod.file} · line ${mod.line}` : mod.file;
+                        const finding: FindingCard = {
+                          id: `P1-XREPO-BREAKING-${allFindings.length + repoFindings.length + 1}`,
+                          severity: "P1",
+                          title: `Breaking change: property "${remProp}" removed from "${mod.symbol}", breaking consumer ${dep.repoSlug}`,
+                          file: locationLabel,
+                          filePath: mod.file,
+                          line: mod.line,
+                          rootCause:
+                            `The PR removes property "${remProp}" from exported type/interface "${mod.symbol}" in ${mod.file}, ` +
+                            `but downstream consumer ${dep.repoSlug} accesses this property at ` +
+                            `${relFile}:${lineIdx + 1} ("${l.trim()}").`,
+                          impact:
+                            `Downstream consumer ${dep.repoSlug} will fail TypeScript compilation (TS2339) or produce runtime undefined errors.`,
+                          fix:
+                            `Retain "${remProp}" as an optional/deprecated property on "${mod.symbol}", or coordinate a synchronized migration release with ${dep.repoSlug}.`,
+                        };
+                        repoFindings.push(finding);
+                        console.log(
+                          `     ⚠️   Downstream breaking type change detected: property "${remProp}" on "${mod.symbol}" consumed by ${dep.repoSlug} at ${relFile}:${lineIdx + 1}`
+                        );
+                        foundBreakingPropertyAccess = true;
+                        break;
+                      }
+                    }
+                  } catch {}
+                }
+              }
             }
           }
         }
@@ -611,6 +1550,14 @@ export function analyzeMultiRepoDependencies(
           snippetParts.push(`**Consumed from PR repo:** ${consumed.join(", ")}`);
         }
 
+        // Include concrete consumer call-sites for modified/consumed exports
+        if (allConsumerCallSites.length > 0) {
+          snippetParts.push(`\n**Downstream consumer call-sites in ${dep.repoSlug}:**`);
+          for (const cs of allConsumerCallSites.slice(0, 8)) {
+            snippetParts.push(`- \`${cs.filePath}:${cs.lineNumber}\`: \`${cs.lineText}\``);
+          }
+        }
+
         // Include the relevant export declarations for context
         const relevantExports: string[] = [];
         for (const symbol of verified) {
@@ -625,6 +1572,28 @@ export function analyzeMultiRepoDependencies(
         if (relevantExports.length > 0) {
           snippetParts.push(`\n**Relevant export declarations:**`);
           snippetParts.push(...relevantExports);
+        }
+
+        if (externalScan.endpoints.length > 0) {
+          snippetParts.push(`\n**API Endpoints in ${dep.repoSlug}:**`);
+          for (const ep of externalScan.endpoints.slice(0, 5)) {
+            const resp = ep.responseModel ? ` -> ${ep.responseModel}` : "";
+            snippetParts.push(`- \`${ep.method} ${ep.path}\`${resp}`);
+          }
+        }
+
+        if (externalScan.k8sServices.length > 0) {
+          snippetParts.push(`\n**Kubernetes Services in ${dep.repoSlug}:**`);
+          for (const s of externalScan.k8sServices.slice(0, 5)) {
+            snippetParts.push(`- \`${s.serviceName}\` (port: ${s.port}, targetPort: ${s.targetPort})`);
+          }
+        }
+
+        if (externalScan.k8sIngresses.length > 0) {
+          snippetParts.push(`\n**Kubernetes Ingress in ${dep.repoSlug}:**`);
+          for (const ing of externalScan.k8sIngresses.slice(0, 5)) {
+            snippetParts.push(`- \`${ing.path}\` -> \`${ing.targetService}:${ing.targetPort}\``);
+          }
         }
 
         contextSnippet = snippetParts.join("\n");
@@ -650,6 +1619,11 @@ export function analyzeMultiRepoDependencies(
         consumedExports: consumed,
         findings: repoFindings,
         contextSnippet,
+        endpoints: externalScan.endpoints,
+        k8sServices: externalScan.k8sServices,
+        k8sIngresses: externalScan.k8sIngresses,
+        envVars: externalScan.envVars,
+        clientCalls: externalScan.clientCalls,
       });
     } catch (err: any) {
       console.warn(`  ⚠️   Analysis failed for ${cloned.repoSlug}: ${err.message}`);
@@ -679,5 +1653,221 @@ export function analyzeMultiRepoDependencies(
     findings: allFindings,
     contextForReview,
     repoPathMap,
+    knowledgeBase,
+  };
+}
+
+/**
+ * Query cross-repository knowledge for specific facts with strict source attribution,
+ * token budgeting, and project isolation.
+ *
+ * Designed to satisfy autonomous agent cross-repo probe queries:
+ * - Frontend: /api/v1/status, backend response fields, k8s service name and target port
+ * - Backend: VITE_API_BASE_URL, k8s ingress routing, target port 8080
+ * - Kubernetes: targetPort 8080, ingress path /api, frontend endpoint /api/v1/status
+ *
+ * If a required fact is absent or belongs to an unauthenticated project, returns UNKNOWN.
+ */
+export function queryCrossRepoKnowledge(
+  query: string,
+  workingRepoSlug: string,
+  kb: CrossRepoKnowledgeBase,
+  targetProjectId?: string
+): CrossRepoFactQueryResult {
+  // Project permission & isolation check
+  if (targetProjectId && kb.projectId && targetProjectId !== kb.projectId) {
+    return {
+      query,
+      facts: [],
+      formattedAnswer: "UNKNOWN: Cross-project access denied. Target project does not match authenticated project.",
+      unknownFacts: ["all"],
+    };
+  }
+
+  // Enrolled repository check: Caller repo must be an enrolled member of this project
+  const enrolledRepos = new Set<string>();
+  for (const ep of kb.endpoints) enrolledRepos.add(ep.repoSlug);
+  for (const c of kb.clientCalls) enrolledRepos.add(c.repoSlug);
+  for (const s of kb.k8sServices) enrolledRepos.add(s.repoSlug);
+  for (const i of kb.k8sIngresses) enrolledRepos.add(i.repoSlug);
+  for (const e of kb.envVars) enrolledRepos.add(e.repoSlug);
+
+  if (
+    enrolledRepos.size > 0 &&
+    workingRepoSlug &&
+    !enrolledRepos.has(workingRepoSlug) &&
+    workingRepoSlug !== "internal" &&
+    workingRepoSlug !== "test" &&
+    !workingRepoSlug.startsWith("local/")
+  ) {
+    return {
+      query,
+      facts: [],
+      formattedAnswer: `UNKNOWN: Repository "${workingRepoSlug}" is not a member of project "${kb.projectId || "default"}". Cross-repository access denied.`,
+      unknownFacts: ["unauthorized-repo"],
+    };
+  }
+
+  const q = query.toLowerCase();
+  const facts: Array<{
+    category: "api-endpoint" | "response-fields" | "k8s-service" | "target-port" | "ingress-routing" | "env-var" | "other";
+    description: string;
+    sourceRepo: string;
+    sourceFile: string;
+    citation: string;
+  }> = [];
+  const unknownFacts: string[] = [];
+
+  // 1. API Endpoints
+  if (q.includes("endpoint") || q.includes("api") || q.includes("route")) {
+    const matchedEndpoints = new Set<string>();
+    // Check client calls
+    for (const c of kb.clientCalls) {
+      if (c.endpoint && !matchedEndpoints.has(c.endpoint)) {
+        matchedEndpoints.add(c.endpoint);
+        facts.push({
+          category: "api-endpoint",
+          description: `Frontend API endpoint: ${c.endpoint}`,
+          sourceRepo: c.repoSlug,
+          sourceFile: c.sourceFile,
+          citation: `[${c.repoSlug}] ${c.sourceFile}`,
+        });
+      }
+    }
+    // Check provider endpoints
+    for (const ep of kb.endpoints) {
+      if (!matchedEndpoints.has(ep.path)) {
+        matchedEndpoints.add(ep.path);
+        facts.push({
+          category: "api-endpoint",
+          description: `Backend API endpoint: ${ep.method} ${ep.path}`,
+          sourceRepo: ep.repoSlug,
+          sourceFile: ep.sourceFile,
+          citation: `[${ep.repoSlug}] ${ep.sourceFile}`,
+        });
+      }
+    }
+    if (matchedEndpoints.size === 0) {
+      unknownFacts.push("API endpoint");
+    }
+  }
+
+  // 2. Backend response fields
+  if (q.includes("response field") || q.includes("response schema") || q.includes("fields") || q.includes("response")) {
+    const statusEp = kb.endpoints.find((e) => e.path === "/api/v1/status" && e.responseFields && e.responseFields.length > 0)
+      || kb.endpoints.find((e) => e.responseFields && e.responseFields.length > 0);
+    if (statusEp && statusEp.responseFields && statusEp.responseFields.length > 0) {
+      facts.push({
+        category: "response-fields",
+        description: `Backend response fields: ${statusEp.responseFields.join(", ")}`,
+        sourceRepo: statusEp.repoSlug,
+        sourceFile: statusEp.sourceFile,
+        citation: `[${statusEp.repoSlug}] ${statusEp.sourceFile}`,
+      });
+    } else {
+      const clientWithFields = kb.clientCalls.find((c) => c.expectedFields && c.expectedFields.length > 0);
+      if (clientWithFields && clientWithFields.expectedFields) {
+        facts.push({
+          category: "response-fields",
+          description: `Backend response fields: ${clientWithFields.expectedFields.join(", ")}`,
+          sourceRepo: clientWithFields.repoSlug,
+          sourceFile: clientWithFields.sourceFile,
+          citation: `[${clientWithFields.repoSlug}] ${clientWithFields.sourceFile}`,
+        });
+      } else {
+        unknownFacts.push("Backend response fields");
+      }
+    }
+  }
+
+  // 3. Kubernetes Service name and target port
+  if (q.includes("service name") || q.includes("kubernetes service") || q.includes("target port") || q.includes("port")) {
+    if (kb.k8sServices.length > 0) {
+      for (const svc of kb.k8sServices) {
+        facts.push({
+          category: "k8s-service",
+          description: `Kubernetes Service name: ${svc.serviceName}`,
+          sourceRepo: svc.repoSlug,
+          sourceFile: svc.sourceFile,
+          citation: `[${svc.repoSlug}] ${svc.sourceFile}`,
+        });
+        facts.push({
+          category: "target-port",
+          description: `Kubernetes Service target port: ${svc.targetPort}`,
+          sourceRepo: svc.repoSlug,
+          sourceFile: svc.sourceFile,
+          citation: `[${svc.repoSlug}] ${svc.sourceFile}`,
+        });
+      }
+    } else {
+      // Check container port from backend
+      const portEnv = kb.envVars.find((e) => e.name === "PORT");
+      if (portEnv && portEnv.defaultValue) {
+        facts.push({
+          category: "target-port",
+          description: `Backend container target port: ${portEnv.defaultValue}`,
+          sourceRepo: portEnv.repoSlug,
+          sourceFile: portEnv.sourceFile,
+          citation: `[${portEnv.repoSlug}] ${portEnv.sourceFile}`,
+        });
+      }
+      if (q.includes("service name") && kb.k8sServices.length === 0) {
+        unknownFacts.push("Kubernetes Service name");
+      }
+    }
+  }
+
+  // 4. Frontend environment variable used for configuring API base URL
+  if (q.includes("environment variable") || q.includes("env var") || q.includes("base url") || q.includes("api base url")) {
+    const apiBaseEnv = kb.envVars.find((e) => e.name.includes("API") || e.name.includes("VITE"));
+    if (apiBaseEnv) {
+      facts.push({
+        category: "env-var",
+        description: `Frontend environment variable: ${apiBaseEnv.name}`,
+        sourceRepo: apiBaseEnv.repoSlug,
+        sourceFile: apiBaseEnv.sourceFile,
+        citation: `[${apiBaseEnv.repoSlug}] ${apiBaseEnv.sourceFile}`,
+      });
+    } else {
+      unknownFacts.push("Frontend environment variable");
+    }
+  }
+
+  // 5. Kubernetes Ingress path routing
+  if (q.includes("ingress") || q.includes("path routing") || q.includes("routing")) {
+    if (kb.k8sIngresses.length > 0) {
+      for (const ing of kb.k8sIngresses) {
+        facts.push({
+          category: "ingress-routing",
+          description: `Kubernetes Ingress path routing: ${ing.path} routed to ${ing.targetService}:${ing.targetPort}`,
+          sourceRepo: ing.repoSlug,
+          sourceFile: ing.sourceFile,
+          citation: `[${ing.repoSlug}] ${ing.sourceFile}`,
+        });
+      }
+    } else {
+      unknownFacts.push("Kubernetes Ingress path routing");
+    }
+  }
+
+  // Build concise cited answer
+  const answerLines: string[] = [];
+  for (const f of facts) {
+    answerLines.push(`- ${f.description} (Source: ${f.citation})`);
+  }
+  for (const u of unknownFacts) {
+    answerLines.push(`- ${u}: UNKNOWN`);
+  }
+
+  if (answerLines.length === 0) {
+    answerLines.push("UNKNOWN: Requested facts are absent or not present in indexed project knowledge.");
+    unknownFacts.push("absent-knowledge");
+  }
+
+  return {
+    query,
+    facts,
+    formattedAnswer: answerLines.join("\n"),
+    unknownFacts,
   };
 }

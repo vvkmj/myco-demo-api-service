@@ -24,6 +24,18 @@ export interface RepoMapping {
 }
 
 /**
+ * A project configuration grouping sibling repositories into a shared Myco project.
+ */
+export interface ProjectRepoConfig {
+  /** Unique project identifier (e.g. "myco-multirepo-project"). */
+  projectId: string;
+  /** Sibling repositories belonging to this project. */
+  repositories: RepoMapping[];
+  /** Optional local filesystem paths for repositories already checked out. */
+  localPaths?: Record<string, string>;
+}
+
+/**
  * A resolved external dependency that the PR code depends on or that
  * depends on the PR code.
  */
@@ -42,8 +54,14 @@ export interface ExternalRepoDependency {
   importedSymbols: string[];
   /** The files in the PR that reference this external repo. */
   referencingFiles: string[];
-  /** Whether this was auto-detected or explicitly mapped. */
-  detectionMethod: "auto-detect" | "explicit-mapping";
+  /** Whether this was auto-detected, explicitly mapped, downstream consumer, or project sibling. */
+  detectionMethod: "auto-detect" | "explicit-mapping" | "downstream-consumer" | "project-sibling";
+  /** Direction of the dependency relationship. */
+  role?: "upstream" | "downstream" | "bidirectional" | "project-sibling";
+  /** Optional local filesystem path if available locally. */
+  localPath?: string;
+  /** Optional project identifier. */
+  projectId?: string;
 }
 
 /**
@@ -56,6 +74,8 @@ export interface MultiRepoResolution {
   unmappedImports: string[];
   /** Whether any cross-repo dependencies were detected at all. */
   hasCrossRepoDeps: boolean;
+  /** Associated project identifier. */
+  projectId?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +120,89 @@ export function parseRepoMappings(raw: string | undefined): RepoMapping[] {
 }
 
 /**
+ * Parse downstream consumer repositories from configuration.
+ *
+ * Supports:
+ * - Environment variables: MULTI_REPO_DOWNSTREAM, DOWNSTREAM_REPOS
+ * - JSON array of slugs: ["MyOrg/api-service", "MyOrg/web-client"]
+ * - JSON array of objects: [{"repo": "MyOrg/api-service", "branch": "main", "token": "..."}]
+ * - JSON object: {"MyOrg/api-service": "main"}
+ * - Comma-separated string: "MyOrg/api-service, MyOrg/web-client"
+ * - In-repo configuration: package.json (myco.consumers) or .myco/consumers.json
+ */
+export function parseDownstreamRepos(raw: string | undefined, repoPath?: string): RepoMapping[] {
+  const downstream: RepoMapping[] = [];
+  const seen = new Set<string>();
+
+  const add = (slug: string, branch = "", token?: string) => {
+    const trimmed = slug.trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      downstream.push({ importPrefix: "", repoSlug: trimmed, branch, token });
+    }
+  };
+
+  if (raw && raw.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item === "string") add(item);
+          else if (item && typeof item === "object" && item.repo) {
+            add(item.repo, item.branch || "", item.token);
+          }
+        }
+      } else if (typeof parsed === "object") {
+        for (const [key, val] of Object.entries(parsed)) {
+          if (typeof val === "string") add(key, val);
+          else if (val && typeof val === "object" && (val as any).repo) {
+            add((val as any).repo, (val as any).branch || "", (val as any).token);
+          } else {
+            add(key);
+          }
+        }
+      }
+    } catch {
+      // Comma-separated fallback: "org/repo1, org/repo2"
+      for (const seg of raw.split(",")) {
+        if (seg.trim()) add(seg.trim());
+      }
+    }
+  }
+
+  // Also inspect in-repo configuration if repoPath is provided
+  if (repoPath) {
+    try {
+      const pkgPath = path.join(repoPath, "package.json");
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        const consumers = pkg.myco?.consumers || pkg.myco?.downstream || pkg.consumers;
+        if (Array.isArray(consumers)) {
+          for (const c of consumers) {
+            if (typeof c === "string") add(c);
+            else if (c && c.repo) add(c.repo, c.branch || "", c.token);
+          }
+        }
+      }
+    } catch {}
+
+    try {
+      const configPath = path.join(repoPath, ".myco", "consumers.json");
+      if (fs.existsSync(configPath)) {
+        const cfg = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        const list = Array.isArray(cfg) ? cfg : cfg.consumers || cfg.downstream || [];
+        for (const c of list) {
+          if (typeof c === "string") add(c);
+          else if (c && c.repo) add(c.repo, c.branch || "", c.token);
+        }
+      }
+    } catch {}
+  }
+
+  return downstream;
+}
+
+/**
  * Parse the MULTI_REPO_TOKENS env var — a JSON object mapping
  * "owner/repo" slugs to auth tokens for private repos.
  */
@@ -116,6 +219,189 @@ export function parseRepoTokens(raw: string | undefined): Map<string, string> {
     console.warn(`  ⚠️   MULTI_REPO_TOKENS is not valid JSON — skipping: ${err.message}`);
   }
   return tokens;
+}
+
+/**
+ * Parse project-level shared repositories from configuration or environment.
+ *
+ * Supports:
+ * - Environment variables: MULTI_REPO_PROJECT_REPOS, PROJECT_REPOSITORIES
+ * - In-repo configuration: .myco/project.json or package.json (myco.project)
+ * - Auto-discovery of sibling repositories in parent directories or multirepo-lab
+ */
+export function parseProjectRepos(raw?: string, repoPath?: string): ProjectRepoConfig {
+  const envRaw = raw !== undefined ? raw : (process.env.MULTI_REPO_PROJECT_REPOS || process.env.PROJECT_REPOSITORIES);
+  const projectId = process.env.MYCO_PROJECT_ID || process.env.PROJECT_ID || "myco-multirepo-project";
+  const repos: RepoMapping[] = [];
+  const localPaths: Record<string, string> = {};
+  const seen = new Set<string>();
+
+  const addRepo = (slug: string, branch = "main", token?: string, localPath?: string) => {
+    const trimmed = slug.trim();
+    if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(trimmed)) {
+      return;
+    }
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      repos.push({ importPrefix: "", repoSlug: trimmed, branch, token });
+      if (localPath) localPaths[trimmed] = path.resolve(localPath);
+    }
+  };
+
+  // 1. Parse env var (JSON array, JSON object, or comma-separated list)
+  if (envRaw && envRaw.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(envRaw);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item === "string") addRepo(item);
+          else if (item && typeof item === "object" && item.repo) {
+            addRepo(item.repo, item.branch || "main", item.token, item.localPath);
+          }
+        }
+      } else if (typeof parsed === "object") {
+        const list = parsed.repositories || parsed.repos || Object.keys(parsed);
+        if (Array.isArray(list)) {
+          for (const item of list) {
+            if (typeof item === "string") addRepo(item);
+            else if (item && typeof item === "object" && item.repo) {
+              addRepo(item.repo, item.branch || "main", item.token, item.localPath);
+            }
+          }
+        } else {
+          for (const [key, val] of Object.entries(parsed)) {
+            if (typeof val === "string") addRepo(key, val);
+            else if (val && typeof val === "object" && (val as any).repo) {
+              addRepo((val as any).repo, (val as any).branch || "main", (val as any).token, (val as any).localPath);
+            }
+          }
+        }
+      }
+    } catch {
+      for (const seg of envRaw.split(",")) {
+        if (seg.trim()) addRepo(seg.trim());
+      }
+    }
+  }
+
+  // 2. Parse in-repo configuration (.myco/project.json or package.json)
+  if (repoPath) {
+    try {
+      const configPath = path.join(repoPath, ".myco", "project.json");
+      if (fs.existsSync(configPath)) {
+        const cfg = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        const list = cfg.repositories || cfg.repos || [];
+        for (const item of list) {
+          if (typeof item === "string") addRepo(item);
+          else if (item && item.repo) addRepo(item.repo, item.branch || "main", item.token, item.localPath);
+        }
+        if (cfg.localPaths && typeof cfg.localPaths === "object") {
+          Object.assign(localPaths, cfg.localPaths);
+        }
+      }
+    } catch {}
+
+    try {
+      const pkgPath = path.join(repoPath, "package.json");
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        const mycoCfg = pkg.myco || {};
+        const list = mycoCfg.projectRepos || mycoCfg.repositories || [];
+        for (const item of list) {
+          if (typeof item === "string") addRepo(item);
+          else if (item && item.repo) addRepo(item.repo, item.branch || "main", item.token, item.localPath);
+        }
+      }
+    } catch {}
+
+    // 3. Auto-discover sibling repositories in parent directories or multirepo-lab
+    const searchDirs = [
+      path.resolve(repoPath, ".."),
+      path.resolve(repoPath, "../multirepo-lab"),
+      path.resolve(process.cwd(), "multirepo-lab")
+    ];
+
+    for (const repo of repos) {
+      if (localPaths[repo.repoSlug]) continue;
+      const repoBaseName = repo.repoSlug.split("/").pop() || repo.repoSlug;
+      for (const sDir of searchDirs) {
+        if (fs.existsSync(sDir)) {
+          const sDirResolved = path.resolve(sDir);
+          const candidate = path.resolve(sDirResolved, repoBaseName);
+          // Strictly verify candidate is contained within search directory
+          if (!candidate.startsWith(sDirResolved + path.sep)) continue;
+          if (fs.existsSync(candidate)) {
+            try {
+              const realCand = fs.realpathSync(candidate);
+              if (fs.statSync(realCand).isDirectory()) {
+                localPaths[repo.repoSlug] = realCand;
+                break;
+              }
+            } catch {}
+          }
+        }
+      }
+    }
+  }
+
+  // 4. Parse MULTI_REPO_LOCAL_PATHS env var
+  if (process.env.MULTI_REPO_LOCAL_PATHS) {
+    try {
+      const parsedLocal = JSON.parse(process.env.MULTI_REPO_LOCAL_PATHS);
+      Object.assign(localPaths, parsedLocal);
+    } catch {}
+  }
+
+  return { projectId, repositories: repos, localPaths };
+}
+
+export interface ExtractedApiContract {
+  endpoint: string;
+  method?: string;
+  envVar?: string;
+  sourceFile: string;
+}
+
+/**
+ * Extract REST API endpoint calls and environment variables from file contents.
+ */
+export function extractApiContracts(content: string, filePath: string): ExtractedApiContract[] {
+  const contracts: ExtractedApiContract[] = [];
+
+  // fetch('/api/...') or fetch(`${...}/api/...`)
+  const fetchRe = /fetch\s*\(\s*[`'"](?:\${([^}]+)})?(\/api\/[^`'"]*)[`'"]/g;
+  let match: RegExpExecArray | null;
+  while ((match = fetchRe.exec(content)) !== null) {
+    contracts.push({
+      endpoint: match[2],
+      method: "GET",
+      envVar: match[1] || undefined,
+      sourceFile: filePath,
+    });
+  }
+
+  // axios.get/post/put/delete('/api/...')
+  const axiosRe = /axios\s*\.\s*(get|post|put|delete|patch)\s*\(\s*[`'"](?:\${([^}]+)})?(\/api\/[^`'"]*)[`'"]/gi;
+  while ((match = axiosRe.exec(content)) !== null) {
+    contracts.push({
+      endpoint: match[3],
+      method: match[1].toUpperCase(),
+      envVar: match[2] || undefined,
+      sourceFile: filePath,
+    });
+  }
+
+  // Environment variables related to API endpoints
+  const envRe = /(?:import\.meta\.env\.|process\.env\.)([A-Z0-9_]+API[A-Z0-9_]*|VITE_[A-Z0-9_]+|NEXT_PUBLIC_[A-Z0-9_]+)/g;
+  while ((match = envRe.exec(content)) !== null) {
+    contracts.push({
+      endpoint: "",
+      envVar: match[1],
+      sourceFile: filePath,
+    });
+  }
+
+  return contracts;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -355,12 +641,24 @@ export function resolveMultiRepoDependencies(
   repoPath: string,
   mappings: RepoMapping[],
   tokens: Map<string, string>,
-  autoDetect: boolean
+  autoDetect: boolean,
+  downstreamRepos?: RepoMapping[],
+  projectConfig?: ProjectRepoConfig
 ): MultiRepoResolution {
   console.log("\n🔗  Resolving cross-repository dependencies...");
 
-  // Collect all external imports from changed files
+  // 1. Resolve explicit or auto-discovered downstream consumer repositories
+  const consumers = downstreamRepos || parseDownstreamRepos(
+    process.env.MULTI_REPO_DOWNSTREAM || process.env.DOWNSTREAM_REPOS,
+    repoPath
+  );
+
+  // 2. Resolve project-level sibling repositories
+  const project = projectConfig || parseProjectRepos(undefined, repoPath);
+
+  // 3. Collect all external imports and API contracts from changed files
   const allImports: ExtractedImport[] = [];
+  const allApiContracts: ExtractedApiContract[] = [];
 
   for (const changed of diff.changedFiles) {
     if (changed.status === "removed") continue;
@@ -371,17 +669,39 @@ export function resolveMultiRepoDependencies(
       const content = fs.readFileSync(filePath, "utf-8");
       const imports = extractExternalImports(content, changed.filename);
       allImports.push(...imports);
+      const apis = extractApiContracts(content, changed.filename);
+      allApiContracts.push(...apis);
     } catch {
       // File unreadable — skip
     }
   }
 
-  if (allImports.length === 0) {
-    console.log("  ℹ️   No external imports detected in changed files.");
-    return { dependencies: [], unmappedImports: [], hasCrossRepoDeps: false };
+  // Also scan entry points if changed files produced no imports or API contracts
+  if (allImports.length === 0 && allApiContracts.length === 0 && fs.existsSync(repoPath)) {
+    try {
+      const candidates = ["src/App.jsx", "src/App.tsx", "src/index.ts", "app/main.py", "main.py"];
+      for (const rel of candidates) {
+        const full = path.join(repoPath, rel);
+        if (fs.existsSync(full)) {
+          const content = fs.readFileSync(full, "utf-8");
+          allImports.push(...extractExternalImports(content, rel));
+          allApiContracts.push(...extractApiContracts(content, rel));
+        }
+      }
+    } catch {}
   }
 
-  console.log(`  📦  Found ${allImports.length} external import(s) across changed files.`);
+  if (allImports.length === 0 && consumers.length === 0 && project.repositories.length === 0 && allApiContracts.length === 0) {
+    console.log("  ℹ️   No external imports, downstream repos, or project siblings detected.");
+    return { dependencies: [], unmappedImports: [], hasCrossRepoDeps: false, projectId: project.projectId };
+  }
+
+  if (allImports.length > 0) {
+    console.log(`  📦  Found ${allImports.length} external import(s) across changed files.`);
+  }
+  if (allApiContracts.length > 0) {
+    console.log(`  🌐  Found ${allApiContracts.length} API contract/env-var reference(s).`);
+  }
 
   // Build auto-detected mapping from package.json
   const autoMappings = autoDetect ? readLocalPackageDeps(repoPath) : new Map<string, string>();
@@ -437,12 +757,63 @@ export function resolveMultiRepoDependencies(
     }
   }
 
+  // Add downstream consumer repos to the dependency set
+  for (const consumer of consumers) {
+    if (consumer.repoSlug === primaryRepoSlug) continue;
+    const existing = repoDepMap.get(consumer.repoSlug);
+    if (existing) {
+      existing.role = "bidirectional";
+    } else {
+      const token = consumer.token || tokens.get(consumer.repoSlug) || process.env.GITHUB_TOKEN;
+      repoDepMap.set(consumer.repoSlug, {
+        repoSlug: consumer.repoSlug,
+        repoUrl: `https://github.com/${consumer.repoSlug}`,
+        branch: consumer.branch || "",
+        token,
+        importSpecifiers: consumer.importPrefix ? [consumer.importPrefix] : [],
+        importedSymbols: [],
+        referencingFiles: [],
+        detectionMethod: "downstream-consumer",
+        role: "downstream",
+      });
+    }
+  }
+
+  // Add project sibling repositories to the dependency set
+  for (const sibling of project.repositories) {
+    if (sibling.repoSlug === primaryRepoSlug) continue;
+    const existing = repoDepMap.get(sibling.repoSlug);
+    const local = project.localPaths?.[sibling.repoSlug];
+    if (existing) {
+      existing.role = "bidirectional";
+      if (local && !existing.localPath) existing.localPath = local;
+      if (!existing.projectId) existing.projectId = project.projectId;
+    } else {
+      const token = sibling.token || tokens.get(sibling.repoSlug) || process.env.GITHUB_TOKEN;
+      repoDepMap.set(sibling.repoSlug, {
+        repoSlug: sibling.repoSlug,
+        repoUrl: `https://github.com/${sibling.repoSlug}`,
+        branch: sibling.branch || "main",
+        token,
+        importSpecifiers: [],
+        importedSymbols: [],
+        referencingFiles: allApiContracts.map((c) => c.sourceFile),
+        detectionMethod: "project-sibling",
+        role: "project-sibling",
+        localPath: local,
+        projectId: project.projectId,
+      });
+    }
+  }
+
   const dependencies = Array.from(repoDepMap.values());
 
   if (dependencies.length > 0) {
     console.log(`  ✅  Resolved ${dependencies.length} cross-repo dependency/ies:`);
     for (const dep of dependencies) {
-      console.log(`     • ${dep.repoSlug} (${dep.importSpecifiers.length} import(s), ${dep.detectionMethod})`);
+      const roleTag = dep.role ? ` [${dep.role}]` : "";
+      const pathTag = dep.localPath ? ` (local: ${path.basename(dep.localPath)})` : "";
+      console.log(`     • ${dep.repoSlug} (${dep.importSpecifiers.length} import(s), ${dep.detectionMethod}${roleTag}${pathTag})`);
     }
   } else {
     console.log("  ℹ️   No cross-repo dependencies could be mapped to repositories.");
@@ -459,6 +830,7 @@ export function resolveMultiRepoDependencies(
     dependencies,
     unmappedImports: Array.from(unmapped),
     hasCrossRepoDeps: dependencies.length > 0,
+    projectId: project.projectId,
   };
 }
 

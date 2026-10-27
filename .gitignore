@@ -11,6 +11,7 @@ target-repo/
 
 # Runtime output
 reviews/
+reports/
 ticket-hashes.json
 findings.json
 
@@ -24,3 +25,7 @@ _to_delete/
 # Files the Claude desktop app saves here when a chat sends a file into
 # this connected folder — not part of the project, nothing to track
 Claude outputs/
+
+# Multirepo lab experiment files
+multirepo-lab/
+

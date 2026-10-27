@@ -20,9 +20,14 @@
 
 export {
   parseRepoMappings,
+  parseDownstreamRepos,
+  parseProjectRepos,
   parseRepoTokens,
+  extractApiContracts,
   resolveMultiRepoDependencies,
   type RepoMapping,
+  type ProjectRepoConfig,
+  type ExtractedApiContract,
   type ExternalRepoDependency,
   type MultiRepoResolution,
 } from "./multiRepoResolver";
@@ -35,14 +40,34 @@ export {
 
 export {
   analyzeMultiRepoDependencies,
+  scanRepoKnowledge,
+  extractPythonExports,
+  extractK8sManifests,
+  extractClientCallsAndEnvVars,
+  queryCrossRepoKnowledge,
+  parseFunctionParams,
+  extractCallArguments,
+  parseInterfaceProperties,
+  findConsumerCallSites,
   type MultiRepoAnalysis,
   type CrossRepoAnalysisResult,
   type ExternalExport,
+  type ConsumerCallSite,
+  type ModifiedExportInfo,
+  type ParsedParam,
+  type ApiEndpointContract,
+  type ApiClientCall,
+  type K8sServiceContract,
+  type K8sIngressContract,
+  type EnvVarContract,
+  type CrossRepoKnowledgeBase,
+  type CrossRepoFactQueryResult,
 } from "./multiRepoAnalyser";
 
 export {
   buildMultiRepoContext,
   emptyMultiRepoContext,
   promoteXRepoFindings,
+  queryProjectKnowledge,
   type MultiRepoContext,
 } from "./multiRepoIntegration";

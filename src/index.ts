@@ -20,6 +20,7 @@ import { findRemovedJavaImportUses } from "./static/javaImportCheck";
 import {
   resolveMultiRepoDependencies,
   parseRepoMappings,
+  parseDownstreamRepos,
   parseRepoTokens,
   cloneExternalRepos,
   cleanupExternalRepos,
@@ -129,10 +130,19 @@ async function main() {
   // Strict backward compatibility: default is disabled. MULTI_REPO_ENABLED="false"
   // explicitly overrides auto-detect or mappings.
   const multiRepoExplicitDisabled = process.env.MULTI_REPO_ENABLED === "false";
+  const hasDownstreamConfig =
+    (!!process.env.MULTI_REPO_DOWNSTREAM && process.env.MULTI_REPO_DOWNSTREAM.trim().length > 0) ||
+    (!!process.env.DOWNSTREAM_REPOS && process.env.DOWNSTREAM_REPOS.trim().length > 0);
+  const hasProjectConfig =
+    (!!process.env.PROJECT_REPOSITORIES && process.env.PROJECT_REPOSITORIES.trim().length > 0) ||
+    (!!process.env.MULTI_REPO_PROJECT_REPOS && process.env.MULTI_REPO_PROJECT_REPOS.trim().length > 0) ||
+    (!!repoPath && fs.existsSync(path.join(repoPath, ".myco", "project.json")));
   const multiRepoEnabled =
     !multiRepoExplicitDisabled &&
     (process.env.MULTI_REPO_ENABLED === "true" ||
-      (!!process.env.MULTI_REPO_MAP && process.env.MULTI_REPO_MAP.trim().length > 0));
+      (!!process.env.MULTI_REPO_MAP && process.env.MULTI_REPO_MAP.trim().length > 0) ||
+      hasDownstreamConfig ||
+      hasProjectConfig);
 
   let clonedRepos: ClonedExternalRepo[] = [];
   let multiRepoCtx = emptyMultiRepoContext();
@@ -140,10 +150,14 @@ async function main() {
   if (multiRepoEnabled && repoPath) {
     console.log("\n🌐  Multi-repository mode active.");
     const mappings = parseRepoMappings(process.env.MULTI_REPO_MAP);
+    const downstream = parseDownstreamRepos(
+      process.env.MULTI_REPO_DOWNSTREAM || process.env.DOWNSTREAM_REPOS,
+      repoPath
+    );
     const tokens = parseRepoTokens(process.env.MULTI_REPO_TOKENS);
     const autoDetect = process.env.MULTI_REPO_AUTO_DETECT !== "false";
 
-    const resolution = resolveMultiRepoDependencies(diff, repoPath, mappings, tokens, autoDetect);
+    const resolution = resolveMultiRepoDependencies(diff, repoPath, mappings, tokens, autoDetect, downstream);
 
     if (resolution.hasCrossRepoDeps) {
       clonedRepos = cloneExternalRepos(resolution.dependencies);

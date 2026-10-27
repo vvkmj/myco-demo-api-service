@@ -5,7 +5,10 @@ import * as os from "os";
 
 import {
   parseRepoMappings,
+  parseDownstreamRepos,
+  parseProjectRepos,
   parseRepoTokens,
+  extractApiContracts,
   resolveMultiRepoDependencies,
 } from "../src/multirepo/multiRepoResolver";
 import {
@@ -15,11 +18,22 @@ import {
 } from "../src/multirepo/multiRepoCloner";
 import {
   analyzeMultiRepoDependencies,
+  scanRepoKnowledge,
+  extractPythonExports,
+  extractK8sManifests,
+  extractClientCallsAndEnvVars,
+  queryCrossRepoKnowledge,
+  parseFunctionParams,
+  extractCallArguments,
+  parseInterfaceProperties,
+  findConsumerCallSites,
+  CrossRepoKnowledgeBase,
 } from "../src/multirepo/multiRepoAnalyser";
 import {
   buildMultiRepoContext,
   emptyMultiRepoContext,
   promoteXRepoFindings,
+  queryProjectKnowledge,
 } from "../src/multirepo/multiRepoIntegration";
 import { executeTool } from "../src/llm/claudeClient";
 import { DiffContext } from "../src/github/prFetcher";
@@ -382,8 +396,143 @@ async function runTests() {
     assert.ok(traversal.includes("Error:"));
   });
 
-  // ── 8. Cleanup ───────────────────────────────────────────────────────────
-  console.log("\nSection 8: Fail-Safe Cleanup Hook");
+  // ── 8. Subtle Breaking Changes (Signature & Contract Changes without export removal) ──
+  console.log("\nSection 8: Subtle Breaking Changes (Signature & Contract Changes without export removal)");
+
+  test("parseDownstreamRepos correctly extracts downstream consumers from various formats", () => {
+    // Array format
+    const arr = parseDownstreamRepos(JSON.stringify(["MyOrg/consumer-a", "MyOrg/consumer-b"]));
+    assert.strictEqual(arr.length, 2);
+    assert.strictEqual(arr[0].repoSlug, "MyOrg/consumer-a");
+    assert.strictEqual(arr[1].repoSlug, "MyOrg/consumer-b");
+
+    // Comma-separated format
+    const csv = parseDownstreamRepos("MyOrg/consumer-c, MyOrg/consumer-d");
+    assert.strictEqual(csv.length, 2);
+    assert.strictEqual(csv[0].repoSlug, "MyOrg/consumer-c");
+    assert.strictEqual(csv[1].repoSlug, "MyOrg/consumer-d");
+  });
+
+  test("parseFunctionParams extracts required arguments and flags optional/default parameters", () => {
+    const f1 = parseFunctionParams("export function calculateTax(amount: number)");
+    assert.strictEqual(f1.minArgs, 1);
+    assert.strictEqual(f1.params.length, 1);
+    assert.strictEqual(f1.params[0].isOptional, false);
+
+    const f2 = parseFunctionParams("export function calculateTax(amount: number, currency: string)");
+    assert.strictEqual(f2.minArgs, 2);
+    assert.strictEqual(f2.params.length, 2);
+
+    const f3 = parseFunctionParams("export function calculateTax(amount: number, currency?: string)");
+    assert.strictEqual(f3.minArgs, 1);
+    assert.strictEqual(f3.params[1].isOptional, true);
+
+    const f4 = parseFunctionParams('export function calculateTax(amount: number, currency: string = "USD")');
+    assert.strictEqual(f4.minArgs, 1);
+    assert.strictEqual(f4.params[1].hasDefault, true);
+  });
+
+  test("extractCallArguments parses argument counts correctly", () => {
+    assert.strictEqual(extractCallArguments("const t = calculateTax(total);", "calculateTax").length, 1);
+    assert.strictEqual(extractCallArguments("const t = calculateTax(total, 'USD');", "calculateTax").length, 2);
+    assert.strictEqual(extractCallArguments("const t = calculateTax();", "calculateTax").length, 0);
+  });
+
+  test("catches subtle breaking change when PR adds required param without removing export", () => {
+    // Primary repo (shared library) exports calculateTax with 1 param initially,
+    // and PR updates file on disk to require 2 params: (amount: number, currency: string)
+    const taxFile = path.join(primaryRepoDir, "tax.ts");
+    fs.writeFileSync(
+      taxFile,
+      `export function calculateTax(amount: number, currency: string) {\n  return amount * 0.1;\n}\n`
+    );
+
+    // Downstream external consumer repo calls calculateTax with only 1 param
+    const consumerClientFile = path.join(externalRepoDir, "src", "checkout.ts");
+    fs.writeFileSync(
+      consumerClientFile,
+      `import { calculateTax } from "@shared/contracts";\nconst tax = calculateTax(100);\n`
+    );
+
+    // PR diff in primary repo: changed from 1 param to 2 params (export NOT removed!)
+    const subtleBreakingDiff: DiffContext = {
+      ...mockDiff,
+      changedFiles: [
+        {
+          filename: "tax.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: `@@ -1,3 +1,3 @@\n-export function calculateTax(amount: number) {\n+export function calculateTax(amount: number, currency: string) {\n   return amount * 0.1;`,
+        },
+      ],
+    };
+
+    const analysis = analyzeMultiRepoDependencies(clonedRepos, primaryRepoDir, subtleBreakingDiff);
+
+    // Find the breaking change finding
+    const breakingFinding = analysis.findings.find((f) =>
+      f.title.includes('Breaking change: export "calculateTax" modified')
+    );
+
+    assert.ok(breakingFinding, "Must generate breaking change finding when required parameter is added");
+    assert.strictEqual(breakingFinding?.filePath, "tax.ts");
+    assert.ok(breakingFinding?.rootCause.includes("requires 2 argument(s), previously 1"));
+    assert.ok(breakingFinding?.rootCause.includes("calls \"calculateTax\" with only 1 argument(s)"));
+    assert.ok(breakingFinding?.rootCause.includes("checkout.ts"));
+
+    // Verify finding promotion
+    const promoted = promoteXRepoFindings([breakingFinding!]);
+    assert.strictEqual(promoted[0].verdict, "CONFIRMED");
+    assert.strictEqual(promoted[0].mergeBlocking, true);
+  });
+
+  test("catches breaking change when PR removes property from an interface used downstream", () => {
+    // Primary repo modifies UserRecord: removes "email" property
+    const userTypeFile = path.join(primaryRepoDir, "user.ts");
+    fs.writeFileSync(
+      userTypeFile,
+      `export interface UserRecord {\n  id: string;\n  fullName: string;\n}\n`
+    );
+
+    // Downstream external consumer repo accesses user.email
+    const consumerUserFile = path.join(externalRepoDir, "src", "users.ts");
+    fs.writeFileSync(
+      consumerUserFile,
+      `import { UserRecord } from "@shared/contracts";\nexport function notify(u: UserRecord) {\n  return u.email;\n}\n`
+    );
+
+    const interfaceBreakingDiff: DiffContext = {
+      ...mockDiff,
+      changedFiles: [
+        {
+          filename: "user.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: `@@ -1,4 +1,4 @@\n export interface UserRecord {\n   id: string;\n-  email: string;\n+  fullName: string;\n }`,
+        },
+      ],
+    };
+
+    const analysis = analyzeMultiRepoDependencies(clonedRepos, primaryRepoDir, interfaceBreakingDiff);
+
+    const breakingFinding = analysis.findings.find((f) =>
+      f.title.includes('Breaking change: property "email" removed from "UserRecord"')
+    );
+
+    assert.ok(breakingFinding, "Must generate breaking change finding when interface property is removed");
+    assert.strictEqual(breakingFinding?.filePath, "user.ts");
+    assert.ok(breakingFinding?.rootCause.includes("accesses this property"));
+    assert.ok(breakingFinding?.rootCause.includes("users.ts"));
+
+    const promoted = promoteXRepoFindings([breakingFinding!]);
+    assert.strictEqual(promoted[0].verdict, "CONFIRMED");
+    assert.strictEqual(promoted[0].mergeBlocking, true);
+  });
+
+  // ── 9. Cleanup ───────────────────────────────────────────────────────────
+  console.log("\nSection 9: Fail-Safe Cleanup Hook");
 
   test("cleanupExternalRepos safely deletes cloned directories and prunes empty parents", () => {
     assert.strictEqual(fs.existsSync(externalRepoDir), true);
@@ -391,9 +540,483 @@ async function runTests() {
     assert.strictEqual(fs.existsSync(externalRepoDir), false);
   });
 
-  // Teardown temp directory
+  // ── 10. Project-Level Shared Repository Enrollment ───────────────────────
+  console.log("\nSection 10: Project-Level Shared Repository Enrollment & Config");
+
+  test("parseProjectRepos parses comma-separated, JSON array, and JSON object configs", () => {
+    const rawList = "vvkmj/myco-multirepo-lab-frontend, vvkmj/myco-multirepo-lab-backend, vvkmj/myco-multirepo-lab-k8s";
+    const resList = parseProjectRepos(rawList);
+    assert.strictEqual(resList.repositories.length, 3);
+    assert.strictEqual(resList.repositories[0].repoSlug, "vvkmj/myco-multirepo-lab-frontend");
+    assert.strictEqual(resList.repositories[1].repoSlug, "vvkmj/myco-multirepo-lab-backend");
+    assert.strictEqual(resList.repositories[2].repoSlug, "vvkmj/myco-multirepo-lab-k8s");
+
+    const jsonConfig = JSON.stringify({
+      projectId: "lab-project-1",
+      repositories: [
+        { repo: "org/repo-a", branch: "dev", localPath: "/tmp/a" },
+        "org/repo-b",
+      ],
+    });
+    const resJson = parseProjectRepos(jsonConfig);
+    assert.strictEqual(resJson.repositories.length, 2);
+    assert.strictEqual(resJson.repositories[0].repoSlug, "org/repo-a");
+    assert.strictEqual(resJson.repositories[0].branch, "dev");
+    assert.strictEqual(resJson.localPaths?.["org/repo-a"], "/tmp/a");
+    assert.strictEqual(resJson.repositories[1].repoSlug, "org/repo-b");
+  });
+
+  test("parseProjectRepos reads in-repo .myco/project.json and package.json configuration", () => {
+    const testRepo = path.join(tempDir, "in-repo-config-test");
+    fs.mkdirSync(path.join(testRepo, ".myco"), { recursive: true });
+    fs.writeFileSync(
+      path.join(testRepo, ".myco", "project.json"),
+      JSON.stringify({
+        projectId: "in-repo-proj",
+        repositories: ["team/frontend", "team/backend", "team/k8s"],
+      })
+    );
+
+    const cfg = parseProjectRepos(undefined, testRepo);
+    assert.strictEqual(cfg.repositories.length, 3);
+    assert.strictEqual(cfg.repositories[0].repoSlug, "team/frontend");
+    assert.strictEqual(cfg.repositories[1].repoSlug, "team/backend");
+    assert.strictEqual(cfg.repositories[2].repoSlug, "team/k8s");
+  });
+
+  // ── 11. Polyglot Contract & Manifest Extraction ───────────────────────────
+  console.log("\nSection 11: Polyglot Contract & Manifest Extraction (Python FastAPI + Kubernetes)");
+
+  test("extractPythonExports extracts FastAPI routes, response models, and fields", () => {
+    const pyCode = `
+import time
+from pydantic import BaseModel, Field
+from fastapi import FastAPI
+
+app = FastAPI(title="Backend Service", version="1.4.0")
+
+class HealthResponse(BaseModel):
+    status: str = Field(..., description="Health status")
+    timestamp: str
+
+class StatusResponse(BaseModel):
+    service: str
+    version: str
+    status: str
+    dependencies: dict
+    uptime_seconds: int
+
+@app.get("/api/v1/status", response_model=StatusResponse)
+def get_status() -> StatusResponse:
+    return StatusResponse(service="order-processor", version="1.4.0", status="operational", dependencies={}, uptime_seconds=120)
+`;
+    const result = extractPythonExports(pyCode, "app/main.py", "org/backend");
+    assert.strictEqual(result.endpoints.length, 1);
+    assert.strictEqual(result.endpoints[0].path, "/api/v1/status");
+    assert.strictEqual(result.endpoints[0].method, "GET");
+    assert.strictEqual(result.endpoints[0].responseModel, "StatusResponse");
+    assert.deepStrictEqual(result.endpoints[0].responseFields, [
+      "service", "version", "status", "dependencies", "uptime_seconds"
+    ]);
+
+    const statusExport = result.exports.find(e => e.symbolName === "get_status");
+    assert.ok(statusExport, "Must export get_status function");
+  });
+
+  test("extractK8sManifests extracts Service and Ingress routing rules", () => {
+    const k8sServiceYaml = `
+apiVersion: v1
+kind: Service
+metadata:
+  name: myco-lab-backend-svc
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: myco-lab-backend
+`;
+    const k8sIngressYaml = `
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myco-lab-ingress
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: myco-lab-backend-svc
+            port:
+              number: 80
+`;
+    const svcRes = extractK8sManifests(k8sServiceYaml, "backend-service.yaml", "org/k8s");
+    assert.strictEqual(svcRes.services.length, 1);
+    assert.strictEqual(svcRes.services[0].serviceName, "myco-lab-backend-svc");
+    assert.strictEqual(svcRes.services[0].port, 80);
+    assert.strictEqual(svcRes.services[0].targetPort, 8080);
+
+    const ingRes = extractK8sManifests(k8sIngressYaml, "ingress.yaml", "org/k8s");
+    assert.strictEqual(ingRes.ingresses.length, 1);
+    assert.strictEqual(ingRes.ingresses[0].path, "/api");
+    assert.strictEqual(ingRes.ingresses[0].targetService, "myco-lab-backend-svc");
+    assert.strictEqual(ingRes.ingresses[0].targetPort, 80);
+  });
+
+  // ── 12. API Client & Environment Variable Extraction ──────────────────────
+  console.log("\nSection 12: API Client & Environment Variable Extraction");
+
+  test("extractClientCallsAndEnvVars extracts client endpoints, expected fields, and env vars", () => {
+    const reactAppCode = `
+import { useState, useEffect } from 'react';
+
+export default function App() {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
+
+  useEffect(() => {
+    fetch(\`\${apiBaseUrl}/api/v1/status\`)
+      .then(r => r.json())
+      .then(data => {
+        console.log(data.status, data.service, data.version, data.uptime_seconds, data.dependencies);
+      });
+  }, []);
+}
+`;
+    const clientRes = extractClientCallsAndEnvVars(reactAppCode, "src/App.jsx", "org/frontend");
+    assert.strictEqual(clientRes.clientCalls.length, 1);
+    assert.strictEqual(clientRes.clientCalls[0].endpoint, "/api/v1/status");
+    assert.strictEqual(clientRes.clientCalls[0].envVarUsed, "apiBaseUrl");
+    assert.deepStrictEqual(
+      clientRes.clientCalls[0].expectedFields?.sort(),
+      ["dependencies", "service", "status", "uptime_seconds", "version"].sort()
+    );
+    assert.ok(clientRes.envVars.some(e => e.name === "VITE_API_BASE_URL"));
+  });
+
+  // ── 13. End-to-End Three-Repository Knowledge Graph & Probes ──────────────
+  console.log("\nSection 13: End-to-End Three-Repository Knowledge Graph & Probes");
+
+  // Create isolated three-repo fixture
+  const triRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "myco-tri-repo-"));
+  const feDir = path.join(triRepoDir, "frontend");
+  const beDir = path.join(triRepoDir, "backend");
+  const k8sDir = path.join(triRepoDir, "k8s");
+
+  fs.mkdirSync(path.join(feDir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(beDir, "app"), { recursive: true });
+  fs.mkdirSync(k8sDir, { recursive: true });
+
+  // Frontend: App.jsx
+  fs.writeFileSync(
+    path.join(feDir, "src", "App.jsx"),
+    `
+    const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
+    const res = await fetch(\`\${apiBaseUrl}/api/v1/status\`);
+    const data = await res.json();
+    const { service, version, status, dependencies, uptime_seconds } = data;
+    `
+  );
+
+  // Backend: main.py + models.py
+  fs.writeFileSync(
+    path.join(beDir, "app", "models.py"),
+    `
+from pydantic import BaseModel
+
+class StatusResponse(BaseModel):
+    service: str
+    version: str
+    status: str
+    dependencies: dict
+    uptime_seconds: int
+`
+  );
+  fs.writeFileSync(
+    path.join(beDir, "app", "main.py"),
+    `
+from fastapi import FastAPI
+from app.models import StatusResponse
+
+app = FastAPI()
+
+@app.get("/api/v1/status", response_model=StatusResponse)
+def get_status() -> StatusResponse:
+    pass
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
+`
+  );
+
+  // K8s: backend-service.yaml + ingress.yaml
+  fs.writeFileSync(
+    path.join(k8sDir, "backend-service.yaml"),
+    `
+apiVersion: v1
+kind: Service
+metadata:
+  name: myco-lab-backend-svc
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+`
+  );
+  fs.writeFileSync(
+    path.join(k8sDir, "ingress.yaml"),
+    `
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myco-lab-ingress
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: myco-lab-backend-svc
+            port:
+              number: 80
+`
+  );
+
+  // Scan all 3 repositories into a shared knowledge base
+  const feScan = scanRepoKnowledge(feDir, "vvkmj/myco-multirepo-lab-frontend");
+  const beScan = scanRepoKnowledge(beDir, "vvkmj/myco-multirepo-lab-backend");
+  const k8sScan = scanRepoKnowledge(k8sDir, "vvkmj/myco-multirepo-lab-k8s");
+
+  const sharedKnowledgeBase: CrossRepoKnowledgeBase = {
+    endpoints: [...feScan.endpoints, ...beScan.endpoints, ...k8sScan.endpoints],
+    clientCalls: [...feScan.clientCalls, ...beScan.clientCalls, ...k8sScan.clientCalls],
+    k8sServices: [...feScan.k8sServices, ...beScan.k8sServices, ...k8sScan.k8sServices],
+    k8sIngresses: [...feScan.k8sIngresses, ...beScan.k8sIngresses, ...k8sScan.k8sIngresses],
+    envVars: [...feScan.envVars, ...beScan.envVars, ...k8sScan.envVars],
+    exports: [],
+    projectId: "lab-project-alpha",
+  };
+
+  test("Cross-Repo Probe 1 (Initiated from Frontend): retrieves endpoint, backend response fields, K8s Service and target port with citations", () => {
+    const probe1Query = "Identify the frontend API endpoint, the backend response fields, and the Kubernetes Service name and target port.";
+    const result = queryCrossRepoKnowledge(probe1Query, "vvkmj/myco-multirepo-lab-frontend", sharedKnowledgeBase, "lab-project-alpha");
+
+    assert.strictEqual(result.unknownFacts.length, 0, "No required fact should be UNKNOWN");
+
+    const endpointFact = result.facts.find(f => f.category === "api-endpoint");
+    assert.ok(endpointFact, "Must find API endpoint");
+    assert.ok(endpointFact.description.includes("/api/v1/status"));
+
+    const respFieldsFact = result.facts.find(f => f.category === "response-fields");
+    assert.ok(respFieldsFact, "Must find response fields");
+    assert.ok(respFieldsFact.description.includes("service, version, status, dependencies, uptime_seconds"));
+    assert.strictEqual(respFieldsFact.sourceRepo, "vvkmj/myco-multirepo-lab-backend");
+
+    const svcFact = result.facts.find(f => f.category === "k8s-service");
+    assert.ok(svcFact, "Must find Kubernetes service name");
+    assert.ok(svcFact.description.includes("myco-lab-backend-svc"));
+    assert.strictEqual(svcFact.sourceRepo, "vvkmj/myco-multirepo-lab-k8s");
+
+    const portFact = result.facts.find(f => f.category === "target-port");
+    assert.ok(portFact, "Must find target port");
+    assert.ok(portFact.description.includes("8080"));
+    assert.strictEqual(portFact.sourceRepo, "vvkmj/myco-multirepo-lab-k8s");
+  });
+
+  test("Cross-Repo Probe 2 (Initiated from Backend): retrieves frontend env var, K8s Ingress routing, and backend target port with citations", () => {
+    const probe2Query = "Identify the frontend environment variable used for configuring the API base URL, the Kubernetes Ingress path routing for the backend API, and the target port exposed by the backend container.";
+    const result = queryCrossRepoKnowledge(probe2Query, "vvkmj/myco-multirepo-lab-backend", sharedKnowledgeBase, "lab-project-alpha");
+
+    assert.strictEqual(result.unknownFacts.length, 0, "No required fact should be UNKNOWN");
+
+    const envFact = result.facts.find(f => f.category === "env-var");
+    assert.ok(envFact, "Must find frontend env var");
+    assert.ok(envFact.description.includes("VITE_API_BASE_URL"));
+    assert.strictEqual(envFact.sourceRepo, "vvkmj/myco-multirepo-lab-frontend");
+
+    const ingressFact = result.facts.find(f => f.category === "ingress-routing");
+    assert.ok(ingressFact, "Must find Kubernetes ingress routing");
+    assert.ok(ingressFact.description.includes("/api routed to myco-lab-backend-svc:80"));
+    assert.strictEqual(ingressFact.sourceRepo, "vvkmj/myco-multirepo-lab-k8s");
+
+    const portFact = result.facts.find(f => f.category === "target-port");
+    assert.ok(portFact, "Must find target port");
+    assert.ok(portFact.description.includes("8080"));
+  });
+
+  test("Cross-Repo Probe 3 (Initiated from Kubernetes): retrieves backend target port, ingress path, and frontend endpoint", () => {
+    const probe3Query = "Identify the backend container target port, the Kubernetes ingress routing path, and the frontend API endpoint.";
+    const result = queryCrossRepoKnowledge(probe3Query, "vvkmj/myco-multirepo-lab-k8s", sharedKnowledgeBase, "lab-project-alpha");
+
+    assert.strictEqual(result.unknownFacts.length, 0);
+    assert.ok(result.facts.some(f => f.category === "target-port" && f.description.includes("8080")));
+    assert.ok(result.facts.some(f => f.category === "ingress-routing" && f.description.includes("/api")));
+    assert.ok(result.facts.some(f => f.category === "api-endpoint" && f.description.includes("/api/v1/status")));
+  });
+
+  // ── 14. Strict Project Isolation & Security ───────────────────────────────
+  console.log("\nSection 14: Strict Project Isolation & Negative/Security Tests");
+
+  test("Project Isolation: query for an unauthorized project ID is rejected with UNKNOWN", () => {
+    const query = "Identify the backend response fields and Kubernetes Service name.";
+    const result = queryCrossRepoKnowledge(query, "vvkmj/myco-multirepo-lab-frontend", sharedKnowledgeBase, "unauthorized-different-project");
+    assert.ok(result.formattedAnswer.includes("UNKNOWN: Cross-project access denied"));
+    assert.strictEqual(result.facts.length, 0, "No cross-project facts may leak");
+  });
+
+  test("Tenant Isolation: query from an unauthorized non-member repository slug is rejected", () => {
+    const query = "Identify the backend response fields and Kubernetes Service name.";
+    const result = queryCrossRepoKnowledge(query, "malicious-org/external-crawler", sharedKnowledgeBase, "lab-project-alpha");
+    assert.ok(result.formattedAnswer.includes("not a member of project"));
+    assert.strictEqual(result.facts.length, 0, "No cross-project facts may leak to unauthorized repository");
+  });
+
+  test("Symlink Sandbox Guard: executeTool prevents reading files escaping via symlinks", () => {
+    const symlinkDir = path.join(triRepoDir, "symlink-test");
+    fs.mkdirSync(symlinkDir, { recursive: true });
+    const targetOutside = path.join(triRepoDir, "outside.txt");
+    fs.writeFileSync(targetOutside, "SECRET_OUTSIDE_DATA");
+    const linkPath = path.join(symlinkDir, "link-outside.txt");
+    try {
+      fs.symlinkSync(targetOutside, linkPath);
+    } catch {}
+
+    const toolRes = executeTool(
+      "read_file",
+      { path: "link-outside.txt" },
+      symlinkDir
+    );
+    // If symlink was created, executeTool should refuse to escape the sandbox
+    if (fs.existsSync(linkPath)) {
+      assert.ok(toolRes.includes("escapes repository sandbox") || toolRes.includes("outside"));
+    }
+  });
+
+  test("Negative Query: absent facts strictly return UNKNOWN without fabrication", () => {
+    const absentQuery = "Identify the gRPC protobuf service package name and Kafka topic partitions.";
+    const result = queryCrossRepoKnowledge(absentQuery, "vvkmj/myco-multirepo-lab-frontend", sharedKnowledgeBase, "lab-project-alpha");
+    assert.ok(result.formattedAnswer.includes("UNKNOWN"));
+  });
+
+  // ── 15. Lifecycle, Resilience & Idempotency ───────────────────────────────
+  console.log("\nSection 15: Lifecycle, Resilience & Idempotency");
+
+  test("Idempotency: rescanning the same repositories produces identical deterministic knowledge", () => {
+    const firstScan = scanRepoKnowledge(beDir, "vvkmj/myco-multirepo-lab-backend");
+    const secondScan = scanRepoKnowledge(beDir, "vvkmj/myco-multirepo-lab-backend");
+    assert.strictEqual(firstScan.endpoints.length, secondScan.endpoints.length);
+    assert.strictEqual(firstScan.endpoints[0].path, secondScan.endpoints[0].path);
+    assert.deepStrictEqual(firstScan.endpoints[0].responseFields, secondScan.endpoints[0].responseFields);
+  });
+
+  test("Resilience: empty or nonexistent directory handles gracefully without throwing", () => {
+    const emptyDir = path.join(triRepoDir, "empty-dir");
+    fs.mkdirSync(emptyDir, { recursive: true });
+    const emptyScan = scanRepoKnowledge(emptyDir, "empty-repo");
+    assert.strictEqual(emptyScan.endpoints.length, 0);
+    assert.strictEqual(emptyScan.k8sServices.length, 0);
+  });
+
+  // ── 16. Scale & Token-Efficiency Measurement ──────────────────────────────
+  console.log("\nSection 16: Scale & Token-Efficiency Measurement (1, 3, 10, 50 Repos)");
+
+  test("Scale: measures scanning time, indexing time, retrieval latency, and token budgeting", () => {
+    const repoCounts = [1, 3, 10, 50];
+    const resultsTable: Array<{
+      repos: number;
+      scanMs: number;
+      indexMs: number;
+      retrievalMs: number;
+      promptTokens: number;
+      facts: number;
+    }> = [];
+
+    for (const count of repoCounts) {
+      // 1. Measure synthetic scanning
+      const tScan0 = process.hrtime.bigint();
+      const syntheticScans = [];
+      for (let i = 0; i < count; i++) {
+        syntheticScans.push({
+          endpoints: [
+            {
+              repoSlug: `org/service-${i}`,
+              method: "GET" as const,
+              path: `/api/v1/resource-${i}`,
+              responseModel: `Resource${i}Response`,
+              responseFields: ["id", "status", "created_at"],
+              sourceFile: `app/routes/${i}.py`,
+            },
+          ],
+          k8sServices: [
+            {
+              repoSlug: `org/service-${i}`,
+              serviceName: `service-${i}-svc`,
+              port: 80,
+              targetPort: 8000 + i,
+              protocol: "TCP",
+              sourceFile: `k8s/svc-${i}.yaml`,
+            },
+          ],
+        });
+      }
+      const tScan1 = process.hrtime.bigint();
+      const scanMs = Number(tScan1 - tScan0) / 1_000_000;
+
+      // 2. Measure indexing
+      const tIdx0 = process.hrtime.bigint();
+      const syntheticKb: CrossRepoKnowledgeBase = {
+        endpoints: syntheticScans.flatMap(s => s.endpoints),
+        clientCalls: [],
+        k8sServices: syntheticScans.flatMap(s => s.k8sServices),
+        k8sIngresses: [],
+        envVars: [],
+        exports: [],
+        projectId: "scale-test-project",
+      };
+      const tIdx1 = process.hrtime.bigint();
+      const indexMs = Number(tIdx1 - tIdx0) / 1_000_000;
+
+      // 3. Measure retrieval
+      const tRet0 = process.hrtime.bigint();
+      const queryRes = queryCrossRepoKnowledge(
+        "Identify the API endpoint and Kubernetes Service name",
+        "org/service-0",
+        syntheticKb,
+        "scale-test-project"
+      );
+      const tRet1 = process.hrtime.bigint();
+      const retrievalMs = Number(tRet1 - tRet0) / 1_000_000;
+      const promptTokens = Math.ceil(queryRes.formattedAnswer.length / 4);
+
+      resultsTable.push({
+        repos: count,
+        scanMs: Math.round(scanMs * 1000) / 1000,
+        indexMs: Math.round(indexMs * 1000) / 1000,
+        retrievalMs: Math.round(retrievalMs * 1000) / 1000,
+        promptTokens,
+        facts: queryRes.facts.length,
+      });
+
+      assert.ok(retrievalMs < 50, `Latency for ${count} repos should be < 50ms`);
+      assert.ok(promptTokens > 0, `Prompt token count should be measured`);
+    }
+
+    console.log("     📊 Detailed Component Benchmark Results:");
+    for (const row of resultsTable) {
+      console.log(`        • ${row.repos} repos: scan=${row.scanMs}ms, index=${row.indexMs}ms, retrieval=${row.retrievalMs}ms, tokens=${row.promptTokens}, facts=${row.facts}`);
+    }
+  });
+
+  // Teardown tri-repo directory
   try {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(triRepoDir, { recursive: true, force: true });
   } catch {}
 
   console.log("\n✨ All tests completed successfully!\n");

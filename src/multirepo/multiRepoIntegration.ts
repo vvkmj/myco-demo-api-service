@@ -1,4 +1,10 @@
-import { MultiRepoAnalysis, CrossRepoAnalysisResult } from "./multiRepoAnalyser";
+import {
+  MultiRepoAnalysis,
+  CrossRepoAnalysisResult,
+  CrossRepoKnowledgeBase,
+  CrossRepoFactQueryResult,
+  queryCrossRepoKnowledge,
+} from "./multiRepoAnalyser";
 import { MultiRepoResolution, ExternalRepoDependency } from "./multiRepoResolver";
 import { ClonedExternalRepo } from "./multiRepoCloner";
 import { FindingCard } from "../review/finding";
@@ -29,6 +35,10 @@ export interface MultiRepoContext {
   analysisSummary: string;
   /** Unmapped imports that couldn't be resolved to repos. */
   unmappedImports: string[];
+  /** Project-wide synthesized knowledge base. */
+  knowledgeBase?: CrossRepoKnowledgeBase;
+  /** Estimated token count of injected cross-repo context. */
+  tokenCount?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,8 +100,9 @@ function buildReviewContextSection(analysis: MultiRepoAnalysis, resolution: Mult
     }
     parts.push(``);
     parts.push(
-      `If any of these consumed exports are modified or removed in this PR, ` +
-      `it may break the above external repositories. Flag such changes as regression risks.`
+      `If any of these consumed exports are modified (e.g. changed parameters, added required arguments, ` +
+      `altered return types, removed interface properties, or modified runtime behavior) or removed in this PR, ` +
+      `it will break downstream consumer repositories. Flag any incompatible modification as a merge-blocking P1 bug.`
     );
     parts.push(``);
   }
@@ -206,6 +217,7 @@ export function buildMultiRepoContext(
   const reviewContext = buildReviewContextSection(analysis, resolution);
   const validatorContext = buildValidatorContextSection(analysis);
   const analysisSummary = buildAnalysisSummary(analysis, resolution, clonedRepos);
+  const tokenCount = Math.ceil((reviewContext.length + validatorContext.length) / 4);
 
   return {
     enabled: true,
@@ -215,6 +227,8 @@ export function buildMultiRepoContext(
     repoPathMap: analysis.repoPathMap,
     analysisSummary,
     unmappedImports: resolution.unmappedImports,
+    knowledgeBase: analysis.knowledgeBase,
+    tokenCount,
   };
 }
 
@@ -231,7 +245,29 @@ export function emptyMultiRepoContext(): MultiRepoContext {
     repoPathMap: new Map(),
     analysisSummary: "",
     unmappedImports: [],
+    tokenCount: 0,
   };
+}
+
+/**
+ * Query cross-repository knowledge for specific facts with strict source attribution,
+ * token budgeting, and project isolation.
+ */
+export function queryProjectKnowledge(
+  query: string,
+  workingRepoSlug: string,
+  ctx: MultiRepoContext,
+  targetProjectId?: string
+): CrossRepoFactQueryResult {
+  if (!ctx.enabled || !ctx.knowledgeBase) {
+    return {
+      query,
+      facts: [],
+      formattedAnswer: "UNKNOWN: Multi-repo knowledge base is not initialized or disabled.",
+      unknownFacts: ["all"],
+    };
+  }
+  return queryCrossRepoKnowledge(query, workingRepoSlug, ctx.knowledgeBase, targetProjectId);
 }
 
 /**

@@ -110,6 +110,26 @@ export function executeTool(
     } catch {
       return `Error: cannot read file: ${args.path}`;
     }
+
+    // Symlink escape check: Ensure target does not resolve outside repository roots
+    try {
+      const realTarget = fs.realpathSync(resolvedTarget);
+      const allowedRoots = [primaryRoot, ...(repoPathMap ? Array.from(repoPathMap.values()).map(r => path.resolve(r)) : [])];
+      const isSafe = allowedRoots.some((r) => {
+        try {
+          const realRoot = fs.realpathSync(r);
+          return realTarget === realRoot || realTarget.startsWith(realRoot + path.sep);
+        } catch {
+          return false;
+        }
+      });
+      if (!isSafe) {
+        return `Error: path escapes repository sandbox via symlink: ${args.path}`;
+      }
+    } catch {
+      return `Error: file not found: ${args.path}`;
+    }
+
     const content = fs.readFileSync(resolvedTarget, "utf-8");
     // Cap at 20k chars to keep individual tool results manageable
     return content.length > 20000

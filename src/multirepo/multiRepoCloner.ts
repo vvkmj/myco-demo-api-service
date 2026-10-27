@@ -69,7 +69,11 @@ export function cloneExternalRepos(
   // entries shouldn't consume all runner disk/time. The most important repos
   // are listed first (ordered by number of import references in the resolver).
   const toClone = dependencies
-    .sort((a, b) => b.importSpecifiers.length - a.importSpecifiers.length)
+    .sort((a, b) => {
+      const scoreA = a.role === "downstream" || a.role === "bidirectional" ? 100 : a.importSpecifiers.length;
+      const scoreB = b.role === "downstream" || b.role === "bidirectional" ? 100 : b.importSpecifiers.length;
+      return scoreB - scoreA;
+    })
     .slice(0, MAX_EXTERNAL_REPOS);
 
   if (toClone.length < dependencies.length) {
@@ -107,6 +111,20 @@ export function cloneExternalRepos(
         dependency: dep,
         success: false,
         error: `Unsafe or malformed repo slug/branch: ${dep.repoSlug}`,
+      });
+      continue;
+    }
+
+    // If a valid local directory is already provided (e.g. local multi-repo checkout or test lab),
+    // use it directly without performing a network clone.
+    if (dep.localPath && fs.existsSync(dep.localPath) && fs.statSync(dep.localPath).isDirectory()) {
+      console.log(`  📂  ${dep.repoSlug} using local directory: ${dep.localPath}`);
+      results.push({
+        repoSlug: dep.repoSlug,
+        localPath: path.resolve(dep.localPath),
+        branch: dep.branch || "default",
+        dependency: dep,
+        success: true,
       });
       continue;
     }
@@ -175,6 +193,10 @@ export function cloneExternalRepos(
 export function cleanupExternalRepos(clonedRepos: ClonedExternalRepo[]): void {
   for (const repo of clonedRepos) {
     if (repo.success && repo.localPath && fs.existsSync(repo.localPath)) {
+      // Safety guard: never delete existing project-sibling directories that were referenced locally
+      if (repo.dependency?.detectionMethod === "project-sibling" && repo.dependency?.localPath === repo.localPath) {
+        continue;
+      }
       try {
         fs.rmSync(repo.localPath, { recursive: true, force: true });
         // Clean up empty parent directories (e.g. owner dir under base)
